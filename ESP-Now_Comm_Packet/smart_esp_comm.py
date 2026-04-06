@@ -12,25 +12,21 @@ PEER_DICT = {}
 espnow_instance = None
 mac_local = None
 
-    '''
-    Action Items    Bit Pattern Bit Hex     Action     
-    Test Comm       0bxxxx xx1x 0x02        Nothing, just sends a test packet              
-    Report Home     0b11xx xxxx 0xC0        Message will aslo need to be forwards to home, work down the map
-    Add Peer        obxx11 xxxx 0x30        A peer needs to be added to network
-    Report Sensor   0bxxxx xxx1 0x01        A sensor is reporting its value to either the home or straight to another sesnor
-    Request Action  0bxxxx 1xxx 0x08        An action is being requested 
-    Report Action   0bxxxx 11xx 0x0C        An action that has been taken is being reported
-    '''
+'''
+Action Items    Bit Pattern Bit Hex     Action     
+Test Comm       0bxxxx xx1x 0x02        Nothing, just sends a test packet              
+Report Home     0b11xx xxxx 0xC0        Message will aslo need to be forwards to home, work down the map
+Add Peer        obxx11 xxxx 0x30        A peer needs to be added to network
+Report Sensor   0bxxxx xxx1 0x01        A sensor is reporting its value to either the home or straight to another sesnor
+Request Action  0bxxxx 1xxx 0x08        An action is being requested 
+Report Action   0bxxxx 11xx 0x0C        An action that has been taken is being reported
 
-    '''
-    Health Report
-    Byte 1: Temp
-    Byte 2: Battery Pecentage
-    Byte 3 - 6: Live time?
-
-
-    Byte 10:
-    '''
+Health Report
+Byte 1: Temp
+Byte 2: Battery Pecentage
+Byte 3 - 6: Live time?
+Byte 10:
+'''
 
 
 def create_msg_packet(dest,send,message,health,list_node =[], act = 0xC0): #Our baseline action is reporting to home
