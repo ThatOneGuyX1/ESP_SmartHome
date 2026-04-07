@@ -1,0 +1,49 @@
+menu "Node A Configuration"
+
+    config USE_MOCK_SENSORS
+        bool "Use mock sensor data (no real hardware)"
+        default y
+        help
+            Enable this to use simulated sensor readings instead of
+            real I2C/GPIO hardware. Useful for testing firmware logic
+            before sensor parts arrive.
+
+    config SENSOR_SAMPLE_INTERVAL_MS
+        int "Sensor sampling interval (milliseconds)"
+        default 30000
+        range 1000 300000
+        help
+            How often the sensor task reads and transmits data.
+            Default is 30 seconds (30000 ms).
+            In deep-sleep mode, this is the timer wakeup period.
+
+    config HEALTH_REPORT_INTERVAL_MS
+        int "Health report interval (milliseconds)"
+        default 120000
+        range 5000 600000
+        help
+            How often the health task reports device diagnostics.
+            Default is 120 seconds (120000 ms).
+
+    config NODE_ALWAYS_ON_RELAY
+        bool "Always-on relay mode (disable deep sleep)"
+        default n
+        help
+            When enabled, the node stays awake with the radio on so it
+            can relay mesh traffic for other nodes. The sensor loop uses
+            vTaskDelay instead of deep sleep.
+
+            When disabled (default), the node enters ESP32 deep sleep
+            between sensor readings to save power. It wakes via a timer
+            (CONFIG_SENSOR_SAMPLE_INTERVAL_MS) or PIR motion interrupt.
+
+    config PIR_GPIO_PIN
+        int "PIR sensor GPIO pin number"
+        default 25
+        range 0 39
+        help
+            GPIO pin connected to the PIR motion sensor digital output.
+            Must be an RTC-capable GPIO for deep-sleep ext1 wakeup.
+            Default is GPIO 25.
+
+endmenu
