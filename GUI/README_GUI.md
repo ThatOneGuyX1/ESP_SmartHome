@@ -1,8 +1,4 @@
-Here is the complete, clean README.md as a raw text block — copy everything between the outer fence:
-
-~~~
-# Serial TUI - Python Terminal Serial Data Monitor
-
+# Gui for ESP Smart Home
 A modern, fully interactive Terminal User Interface (TUI) for monitoring,
 filtering, and logging live serial data from a connected host device.
 
@@ -13,9 +9,9 @@ Built with [Textual](https://textual.textualize.io/) and [PySerial](https://pyse
 ## Project Structure
 
 ```
-serial_tui/
-├── main.py              # Entry point — Textual TUI application
-├── serial_import.py     # Serial reader backend (threaded PySerial)
+GUI/
+├── GUI.py              # Entry point — Textual TUI application
+├── esp32+to_PC.py     # Serial reader backend (threaded PySerial)
 ├── config.py            # Default settings (port, baud, sensors, logging)
 ├── logger.py            # CSV data logger with hot-swap destination
 ├── requirements.txt     # Python dependencies

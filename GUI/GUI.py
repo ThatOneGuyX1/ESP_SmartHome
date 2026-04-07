@@ -22,9 +22,9 @@ from textual.widgets    import (
 from textual.reactive   import reactive
 from textual            import on
 
-from serial_import import SerialReader
-from logger        import DataLogger
-from config        import AVAILABLE_SENSORS, DEFAULT_PORT, DEFAULT_BAUDRATE
+from esp32_to_PC    import SerialReader
+from logger         import DataLogger
+from config         import AVAILABLE_SENSORS, DEFAULT_PORT, DEFAULT_BAUDRATE
 
 
 # ─────────────────────────────────────────────────────────────
