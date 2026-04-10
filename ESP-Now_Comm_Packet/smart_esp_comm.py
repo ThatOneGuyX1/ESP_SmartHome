@@ -1,6 +1,7 @@
 import network
 import espnow
 import json
+import time
 
 PEER_FILE = "peer_file.json"
 PEER_DICT = {}
@@ -49,6 +50,10 @@ def create_msg_packet(dest,send,message,health,list_node =None, act = 0xC0): #Ou
     packet += send
     packet += bytes([act])
     packet += bytes([health.get("bat", 0)])
+
+    timestamp = time.ticks_ms() & 0xFFFFFFFF
+    packet += timestamp.to_bytes(4, 'big') # 4 bytes
+
     packet += bytes([len(msg_bytes)])
     packet += msg_bytes
 
@@ -72,14 +77,18 @@ def parse_msg_packet(packet: bytes):
         sender = packet[6:12]
         act = packet[12]
         battery = packet[13]
-        msg_len = packet[14]
-        msg = packet[15:15+msg_len].decode()
+
+        timestamp = int.from_bytes(packet[14:18], 'big')
+
+        msg_len = packet[18]
+        msg = packet[19:19+msg_len].decode()
 
         return {
             "destination": format_mac(dest),
             "sender": format_mac(sender),
             "action": act,
             "battery": battery,
+            "timestamp": timestamp,
             "message": msg
         }
 
@@ -134,12 +143,15 @@ def espnow_send(peer_mac: bytes, packet: bytes):
     """
     e = get_espnow()
 
+    print("Sending lenght: ", len(packet))
+    print("Type: ", type(packet))
+
     if len(packet) > 250:
         print("[ERROR] Packet too large: ", len(packet))
         return
 
     try:
-        e.send(peer_mac, packet)
+        e.send(peer_mac, bytes(packet))
     except OSError as err:
         print(f"[ESP-NOW] Send failed to {format_mac(peer_mac)}: {err}")
     
@@ -164,10 +176,18 @@ def espnow_set_recv_callback(callback):
 
     def _internal_callback(_):
         while True:
-            mac, msg = e.irecv(0)
-            if mac is None:
+            result = e.irecv(0)
+
+            if result is None:
                 break
-            callback(mac, msg)
+
+            if len(result) == 3:
+                mac, msg, rssi = result
+            else:
+                mac, msg = result
+                rssi = None
+
+            callback(mac, msg, rssi)
 
     e.irq(_internal_callback)
 
