@@ -1,39 +1,35 @@
 import network
-
 import espnow
-
 import json
 
 PEER_FILE = "peer_file.json"
 PEER_DICT = {}
 
-
-
 espnow_instance = None
 mac_local = None
 
-    '''
-    Action Items    Bit Pattern Bit Hex     Action     
-    Test Comm       0bxxxx xx1x 0x02        Nothing, just sends a test packet              
-    Report Home     0b11xx xxxx 0xC0        Message will aslo need to be forwards to home, work down the map
-    Add Peer        obxx11 xxxx 0x30        A peer needs to be added to network
-    Report Sensor   0bxxxx xxx1 0x01        A sensor is reporting its value to either the home or straight to another sesnor
-    Request Action  0bxxxx 1xxx 0x08        An action is being requested 
-    Report Action   0bxxxx 11xx 0x0C        An action that has been taken is being reported
-    '''
+'''
+Action Items    Bit Pattern Bit Hex     Action     
+Test Comm       0bxxxx xx1x 0x02        Nothing, just sends a test packet              
+Report Home     0b11xx xxxx 0xC0        Message will aslo need to be forwards to home, work down the map
+Add Peer        obxx11 xxxx 0x30        A peer needs to be added to network
+Report Sensor   0bxxxx xxx1 0x01        A sensor is reporting its value to either the home or straight to another sesnor
+Request Action  0bxxxx 1xxx 0x08        An action is being requested 
+Report Action   0bxxxx 11xx 0x0C        An action that has been taken is being reported
+'''
 
-    '''
-    Health Report
-    Byte 1: Temp
-    Byte 2: Battery Pecentage
-    Byte 3 - 6: Live time?
-
-
-    Byte 10:
-    '''
+'''
+Health Report
+Byte 1: Temp
+Byte 2: Battery Pecentage
+Byte 3 - 6: Live time?
 
 
-def create_msg_packet(dest,send,message,health,list_node =[], act = 0xC0): #Our baseline action is reporting to home
+Byte 10:
+'''
+
+
+def create_msg_packet(dest,send,message,health,list_node =None, act = 0xC0): #Our baseline action is reporting to home
     '''
     The message packet is designed to provide a custom format for out esp messages. One format can also accomplish many things in on packet
     We first include the start and end points of the message (Destaionation and Sender) (12 Bytes total)
@@ -42,17 +38,54 @@ def create_msg_packet(dest,send,message,health,list_node =[], act = 0xC0): #Our 
     We can also send a health update on top of this. Messages between sensors do not need to do anything with this info
     We can then hold a list of 32 other Nodes that we have passed trough.
     ''' 
-    # Total length is 250 Byters
-    destination = None  # 06 Bytes 244 Remain 
-    sender = None       # 06 Bytes 238 Reamin
-    msg = None          # 32 Bytes 206 Remain
-    act = 0b00000000    # 01 Bytes 205 Remain
-    health_rept= None   # 10 Bytes 195 Remain
-    list_node = []    # 195 Bytes 0 Remain  
-    if sender != mac_local:
-        list_node.append(mac_local) 
+    msg_bytes = message.encode()
 
-    return f"{destination}{sender}{msg}{act}{health_rept}{list_node}"   
+    if len(msg_bytes) > 200:
+        msg_bytes = msg_bytes[:200] 
+
+    packet = bytearray()
+
+    packet += dest
+    packet += send
+    packet += bytes([act])
+    packet += bytes([health.get("bat", 0)])
+    packet += bytes([len(msg_bytes)])
+    packet += msg_bytes
+
+    return packet
+    
+    ## Total length is 250 Byters
+    #destination = None  # 06 Bytes 244 Remain 
+    #sender = None       # 06 Bytes 238 Reamin
+    #msg = None          # 32 Bytes 206 Remain
+    #act = 0b00000000    # 01 Bytes 205 Remain
+    #health_rept= None   # 10 Bytes 195 Remain
+    #list_node = []    # 195 Bytes 0 Remain  
+    #if sender != mac_local:
+    #    list_node.append(mac_local) 
+
+    #return f"{destination}{sender}{msg}{act}{health_rept}{list_node}"   
+
+def parse_msg_packet(packet: bytes):
+    try:
+        dest = packet[0:6]
+        sender = packet[6:12]
+        act = packet[12]
+        battery = packet[13]
+        msg_len = packet[14]
+        msg = packet[15:15+msg_len].decode()
+
+        return {
+            "destination": format_mac(dest),
+            "sender": format_mac(sender),
+            "action": act,
+            "battery": battery,
+            "message": msg
+        }
+
+    except Exception as e:
+        print("[PARSE ERROR]", e)
+        return None
 
 def espnow_setup():
     """
@@ -100,6 +133,11 @@ def espnow_send(peer_mac: bytes, packet: bytes):
     Peer must already be added via espnow_add_peer().
     """
     e = get_espnow()
+
+    if len(packet) > 250:
+        print("[ERROR] Packet too large: ", len(packet))
+        return
+
     try:
         e.send(peer_mac, packet)
     except OSError as err:
@@ -122,7 +160,16 @@ def espnow_set_recv_callback(callback):
     Callback signature: callback(mac: bytes, packet: bytes)
     """
     e = get_espnow()
-    e.irq(callback)
+    #e.irq(callback)
+
+    def _internal_callback(_):
+        while True:
+            mac, msg = e.irecv(0)
+            if mac is None:
+                break
+            callback(mac, msg)
+
+    e.irq(_internal_callback)
 
 
 def espnow_receive(timeout_ms=0):
@@ -145,7 +192,7 @@ def choose_peer():
     pass
 
 
-def recieve_message():s
+def recieve_message():
     pass
 
 def send_message():
@@ -164,12 +211,17 @@ def save_peers():
 def load_peers():
     global PEER_DICT
     PEER_DICT = {}
-    with open(PEER_FILE, "r") as peers:
-        data = json.load(peers)
 
-        for name, mac in data.items():
-            mac_clean = bytes.fromhex(maca.replace(':', '').replace('-', ''))
-            PEER_DICT[name] = mac
+    try:
+        with open(PEER_FILE, "r") as peers:
+            data = json.load(peers)
+
+            for name, mac in data.items():
+                mac_clean = bytes.fromhex(mac.replace(':', ''))
+                PEER_DICT[name] = mac
+
+    except:
+        print("[ESP-NOW] No peer file found.")
 
 
 def main():
@@ -177,5 +229,6 @@ def main():
     espnow_set_recv_callback(on_receive)
     load_peers()
     
+
 
 
