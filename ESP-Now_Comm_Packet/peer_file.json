@@ -1,0 +1,10 @@
+{
+  "peers": {
+    "living_room": {
+      "mac": "AA:BB:CC:DD:EE:FF",
+      "neighbors": ["kitchen", "hallway"],
+      "hop": 1
+    }
+  },
+  "local_name": "living_room"
+}
