@@ -674,35 +674,37 @@ def _find_next_hop_toward_home() -> bytes | None:
 def handle_report_home(pkt: dict):
     """
     Handle a packet flagged ACT_REPORT_HOME.
-    
-    If this node IS home (hop 0), consume and process the message.
-    Otherwise, forward the packet up the chain toward home.
-    
-    Args:
-        pkt: Parsed packet dict from parse_packet()
+    If home: serialize parsed packet as JSON to UART for the PC GUI.
+    If not home: forward toward home.
     """
     sender = pkt.get("sender", "unknown")
     message = pkt.get("message", b"")
     trail = pkt.get("trail", [])
 
     if LOCAL_HOP == 0:
-        # ── We are home — consume the packet ──────────────────────────────
-        print(f"[HOME] Packet arrived home from '{sender}'.")
-        print(f"[HOME] Trail: {trail}")
-        print(f"[HOME] Message ({len(message)}B): {message}")
-        # TODO: Pass message to your application layer here
-        #       e.g., log to file, trigger an alert, update a dashboard, etc.
+        # ── Serialize to UART for PC GUI ──────────────────────────────────
+        health = decode_health(pkt.get("raw", b'\x00' * 67)) if pkt.get("flags", 0) & FLAG_HEALTH else {}
+        
+        output = {
+            "type": "sensor_report",
+            "sender": sender,
+            "message": message.decode("utf-8", errors="replace").rstrip("\x00"),
+            "trail": trail,
+            "health": health,
+            "timestamp": None  # PC side will stamp this
+        }
+        # Print as single JSON line — SerialReader on PC will parse this
+        print(json.dumps(output))
         return
 
-    # ── Not home yet — find next hop and forward ───────────────────────────
+    # ── Not home — forward up the chain ───────────────────────────────────
     next_hop_mac = _find_next_hop_toward_home()
     if next_hop_mac is None:
-        print(f"[ROUTE] Dead end! Cannot forward packet from '{sender}' toward home.")
+        print(f"[ROUTE] Dead end! Cannot forward from '{sender}'.")
         return
 
-    print(f"[ROUTE] Forwarding ACT_REPORT_HOME packet from '{sender}' toward home.")
+    print(f"[ROUTE] Forwarding ACT_REPORT_HOME from '{sender}' toward home.")
     forward_packet(pkt, next_hop_mac)
-
 
 # ── Packet Forwarding ─────────────────────────────────────────────────────────
 
