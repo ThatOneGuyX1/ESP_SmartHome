@@ -53,11 +53,11 @@ A node at hop 2 will forward peer list updates to hop 3 neighbors but never back
 ```
 main.py               Entry point. Calls boot() and runs the main loop.
 smart_esp_comm.py     The entire communication library.
-node_config.json      This node's fixed identity. Set once at provisioning.
+{SENSOR_NAME}_config.json      This node's fixed identity. Set once at provisioning.
 peer_file.json        The full network map. Updated dynamically by sync packets.
 ```
 
-### node_config.json
+### {SENSOR_NAME}_config.json
 
 Stores the node's identity. Written once when the node is provisioned and does not change unless you reprovision.
 

@@ -69,7 +69,7 @@ def espnow_setup():
 
     e = espnow.ESPNow()
     e.active(True)
-    e.add_peer(BROADCAST_MAC)
+    e.add_peer(BROADCAST_MAC) # Need to act as an added peer is not a real peer
 
     espnow_instance = e
     print(f"[ESP-NOW] Ready. MAC: {format_mac(mac_local)}")
@@ -534,6 +534,32 @@ def espnow_send(peer_mac: bytes, packet: bytes):
 # ── Receive Dispatcher ────────────────────────────────────────────────────────
 
 def on_receive(mac: bytes, raw: bytes):
+    sender_name = _name_for_mac(mac)
+    if sender_name is None:
+        print(f"[WARN] Packet from unknown MAC {format_mac(mac)} — rejected.")
+        return
+
+    pkt = parse_packet(raw)
+    if not pkt:
+        return
+
+    action = pkt["action"]
+
+    if action == ACT_REPORT_HOME:
+        handle_report_home(pkt)
+
+    elif action == ACT_SYNC_PEERS:
+        handle_sync_packet(raw)
+
+    elif action == ACT_TEST:
+        print(f"[TEST] Ping from '{sender_name}'")
+
+    elif action == ACT_SENSOR_RPT:
+        print(f"[SENSOR] Report from '{sender_name}': {pkt['message']}")
+
+    # Add other action handlers as needed...
+    else:
+        print(f"[WARN] Unknown action byte: {hex(action)} from '{sender_name}'")
     """
     Top-level receive callback. Dispatches on action byte.
     Rejects and logs packets from unknown MACs.
@@ -577,6 +603,66 @@ def on_receive(mac: bytes, raw: bytes):
 
     else:
         print(f"[RX] Unknown action 0x{action:02X} from '{sender_name}'.")
+
+# ── Return-to-Home Routing ─────────────────────────────────────────────────────
+
+def _find_next_hop_toward_home() -> bytes | None:
+    """
+    Find the best neighbor to forward a packet toward home (hop 0).
+    Selects the direct neighbor with the lowest hop count.
+    Returns the neighbor's MAC as bytes, or None if no suitable hop found.
+    """
+    my_neighbors = _get_my_neighbors()
+    best_name = None
+    best_hop = LOCAL_HOP  # only forward to nodes closer than us
+
+    for name in my_neighbors:
+        if name not in PEER_DICT:
+            continue
+        peer_hop = PEER_DICT[name]["hop"]
+        if peer_hop < best_hop:
+            best_hop = peer_hop
+            best_name = name
+
+    if best_name is None:
+        print("[ROUTE] No neighbor closer to home found. Are we home?")
+        return None
+
+    print(f"[ROUTE] Next hop toward home: '{best_name}' (hop {best_hop})")
+    return mac_bytes(PEER_DICT[best_name]["mac"])
+
+
+def handle_report_home(pkt: dict):
+    """
+    Handle a packet flagged ACT_REPORT_HOME.
+    
+    If this node IS home (hop 0), consume and process the message.
+    Otherwise, forward the packet up the chain toward home.
+    
+    Args:
+        pkt: Parsed packet dict from parse_packet()
+    """
+    sender = pkt.get("sender", "unknown")
+    message = pkt.get("message", b"")
+    trail = pkt.get("trail", [])
+
+    if LOCAL_HOP == 0:
+        # ── We are home — consume the packet ──────────────────────────────
+        print(f"[HOME] Packet arrived home from '{sender}'.")
+        print(f"[HOME] Trail: {trail}")
+        print(f"[HOME] Message ({len(message)}B): {message}")
+        # TODO: Pass message to your application layer here
+        #       e.g., log to file, trigger an alert, update a dashboard, etc.
+        return
+
+    # ── Not home yet — find next hop and forward ───────────────────────────
+    next_hop_mac = _find_next_hop_toward_home()
+    if next_hop_mac is None:
+        print(f"[ROUTE] Dead end! Cannot forward packet from '{sender}' toward home.")
+        return
+
+    print(f"[ROUTE] Forwarding ACT_REPORT_HOME packet from '{sender}' toward home.")
+    forward_packet(pkt, next_hop_mac)
 
 
 # ── Packet Forwarding ─────────────────────────────────────────────────────────
