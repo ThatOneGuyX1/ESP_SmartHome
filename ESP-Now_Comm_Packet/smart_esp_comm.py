@@ -246,10 +246,9 @@ def load_peers():
 # ── Internal Helpers ──────────────────────────────────────────────────────────
 
 def _get_my_neighbors() -> list:
-    """Return the neighbor list for this node from PEER_DICT."""
-    if LOCAL_NAME and LOCAL_NAME in PEER_DICT:
-        return PEER_DICT[LOCAL_NAME].get("neighbors", [])
-    return []
+    """Return list of peer names that are direct neighbors of this node."""
+    return [name for name, entry in PEER_DICT.items() if LOCAL_NAME in entry["neighbors"]]
+
 
 
 def _espnow_add_peer_safe(mac: bytes):
@@ -572,38 +571,12 @@ def espnow_send(peer_mac: bytes, packet: bytes):
 
 # ── Receive Dispatcher ────────────────────────────────────────────────────────
 
-def on_receive(mac: bytes, raw: bytes):
-    sender_name = _name_for_mac(mac)
-    if sender_name is None:
-        print(f"[WARN] Packet from unknown MAC {format_mac(mac)} — rejected.")
+def on_receive(e):
+    """Receive callback. Called by ESP-NOW IRQ with the ESPNow object."""
+    mac, raw = e.irecv(0)
+    if mac is None:
         return
 
-    pkt = parse_packet(raw)
-    if not pkt:
-        return
-
-    action = pkt["action"]
-
-    if action == ACT_REPORT_HOME:
-        handle_report_home(pkt)
-
-    elif action == ACT_SYNC_PEERS:
-        handle_sync_packet(raw)
-
-    elif action == ACT_TEST:
-        print(f"[TEST] Ping from '{sender_name}'")
-
-    elif action == ACT_SENSOR_RPT:
-        print(f"[SENSOR] Report from '{sender_name}': {pkt['message']}")
-
-    # Add other action handlers as needed...
-    else:
-        print(f"[WARN] Unknown action byte: {hex(action)} from '{sender_name}'")
-    """
-    Top-level receive callback. Dispatches on action byte.
-    Rejects and logs packets from unknown MACs.
-    Register this with espnow_set_recv_callback(on_receive).
-    """
     sender_name = _name_for_mac(mac)
     if sender_name is None:
         print(f"[WARN] Packet from unknown MAC {format_mac(mac)} — rejected.")
@@ -612,12 +585,10 @@ def on_receive(mac: bytes, raw: bytes):
     if not raw:
         return
 
-    # Sync packets use their own raw format (not the 67-byte packet structure)
     if raw[0] == ACT_SYNC_PEERS:
         handle_sync_packet(raw)
         return
 
-    # All other packets use the standard 67-byte structure
     pkt = parse_packet(raw)
     if not pkt:
         return
@@ -625,14 +596,13 @@ def on_receive(mac: bytes, raw: bytes):
     action = pkt["action"]
 
     if action == ACT_TEST:
-        print(f"[TEST] Ping from '{sender_name}'.")
+        print(f"[TEST] Ping from '{sender_name}'")
 
     elif action == ACT_SENSOR_RPT:
         print(f"[SENSOR] Report from '{sender_name}': {pkt['message']}")
 
     elif action == ACT_REPORT_HOME:
-        print(f"[HOME] Forward request from '{sender_name}'.")
-        # TODO: routing logic to forward toward host
+        handle_report_home(pkt)
 
     elif action == ACT_REQ_ACTION:
         print(f"[ACTION] Request from '{sender_name}': {pkt['message']}")
@@ -641,7 +611,7 @@ def on_receive(mac: bytes, raw: bytes):
         print(f"[ACTION] Report from '{sender_name}': {pkt['message']}")
 
     else:
-        print(f"[RX] Unknown action 0x{action:02X} from '{sender_name}'.")
+        print(f"[RX] Unknown action 0x{action:02X} from '{sender_name}'")
 
 # ── Return-to-Home Routing ─────────────────────────────────────────────────────
 
