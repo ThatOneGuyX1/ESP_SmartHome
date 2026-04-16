@@ -1,48 +1,113 @@
 from common_esp import *
+import time
 
 espnow_setup()
+espnow_set_recv_callback()
 
-print(format_mac(get_local_mac())) # My Board: 34:B4:72:70:26:74
-espnow_add_peer(b'\x00\x4B\x12\xBE\xB9\xC0') # Node MAC
+print("HOST MAC:", format_mac(get_local_mac()))
 
 NETWORK_MAP = {}
+KNOWN_PEERS = set()   # TRACK KNOWN PEERS
 
-def on_receive(mac, msg, rssi):
-    if msg:
-        data = parse_msg_packet(msg)
+def process_packet(mac, msg, rssi):
+    data = parse_msg_packet(msg)
+    if not data:
+        return
 
-        if data:
-            print("\n[RECEIVED PACKET]")
-            print("From: ", data["sender"])
-            print("RSSI: ", rssi)
-            print("Battery: ", data["battery"])
-            print("Message: ", data["message"])
+    sender = data["sender"]
+    sender_mac_bytes = bytes.fromhex(sender.replace(':',''))
 
-            reply_packet = create_msg_packet(
-                dest=bytes.fromhex(data["sender"].replace(':','')),
-                send=get_local_mac(),
-                message="back",
-                health={"bat": 100},
-                act=0x03
-            )
+    # Only add peer ONCE
+    if sender_mac_bytes not in KNOWN_PEERS:
+        espnow_add_peer(sender_mac_bytes)
+        KNOWN_PEERS.add(sender_mac_bytes)
 
-            print("Reply size: ", len(reply_packet)) # debug
-            espnow_send(bytes.fromhex(data["sender"].replace(':','')), reply_packet)
+    # Get RSSI from peers_table
+    e = get_espnow()
+    peer_info = e.peers_table.get(sender_mac_bytes, None)
 
-            # update network map
-            sender = data["sender"]
+    if peer_info:
+        rssi = peer_info[0]
+    else:
+        rssi = None
 
-            NETWORK_MAP[sender] = {
-                "last_seen": time.ticks_ms(),
-                "battery": data["battery"],
-                "rssi": rssi
-        }
+    # Compute latency
+    now = time.ticks_ms()
+    latency = time.ticks_diff(now, data["timestamp"])
 
-        print("\n[NETWORK MAP]")
-        for node, info in NETWORK_MAP.items():
-            age = time.ticks_diff(time.ticks_ms(), info["last_seen"])
+    # Update network map
+    NETWORK_MAP[sender] = {
+        "last_seen": now,
+        "battery": data["battery"],
+        "rssi": rssi,
+        "latency": latency
+    }
 
-            print(f"{node} | RSSI: {info['rssi']} | Battery: {info['battery']} | Last Seen: {age} ms ago")
+    # Send reply (keeps connection alive)
+    reply_packet = create_msg_packet(
+        dest=sender_mac_bytes,
+        send=get_local_mac(),
+        message="ack",
+        health={"bat": 100},
+        act=0x03
+    )
+
+    espnow_send(sender_mac_bytes, reply_packet)
 
 
-espnow_set_recv_callback(on_receive)
+def display_network():
+    print("\n" + "="*50)
+    print("NETWORK MAP")
+    print("="*50)
+
+    now = time.ticks_ms()
+
+    for node, info in list(NETWORK_MAP.items()):
+        age = time.ticks_diff(now, info["last_seen"])
+
+        # Remove dead nodes (>15 sec)
+        if age > 15000:
+            del NETWORK_MAP[node]
+            continue
+
+        # Signal quality label
+        if info["rssi"] is None:
+            signal = "UNKNOWN"
+        elif info["rssi"] > -50:
+            signal = "STRONG"
+        elif info["rssi"] > -70:
+            signal = "MEDIUM"
+        else:
+            signal = "WEAK"
+
+        print(f"""
+Node: {node}
+  RSSI: {info['rssi']} ({signal})
+  Latency: {info['latency']} ms
+  Battery: {info['battery']}%
+  Last Seen: {age} ms ago
+""")
+
+    print("="*50)
+
+
+# Main loop
+last_display = 0
+
+while True:
+    pkt = get_next_packet()
+
+    if pkt:
+        if len(pkt) == 3:
+            mac, msg, rssi = pkt
+        else:
+            mac, msg = pkt
+            rssi = None
+
+        if msg:
+            process_packet(mac, msg, rssi)
+
+    # refresh display every 2 seconds
+    if time.ticks_diff(time.ticks_ms(), last_display) > 2000:
+        display_network()
+        last_display = time.ticks_ms()

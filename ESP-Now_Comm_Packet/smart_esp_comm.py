@@ -106,6 +106,9 @@ def espnow_setup():
     sta = network.WLAN(network.WLAN.IF_STA)
     sta.active(True)
 
+    sta.disconnect()
+    sta.config(channel=6)
+
     mac_local = sta.config('mac')
 
     e = espnow.ESPNow()
@@ -166,7 +169,9 @@ def espnow_add_peer(mac: bytes):
         print(f"[ESP-NOW] Failed to add peer {format_mac(mac)}: {err}")
 
 
-def espnow_set_recv_callback(callback):
+recv_queue = []
+
+def espnow_set_recv_callback():
     """
     Register a callback function triggered on every incoming message.
     Callback signature: callback(mac: bytes, packet: bytes)
@@ -175,21 +180,17 @@ def espnow_set_recv_callback(callback):
     #e.irq(callback)
 
     def _internal_callback(_):
-        while True:
-            result = e.irecv(0)
-
-            if result is None:
-                break
-
-            if len(result) == 3:
-                mac, msg, rssi = result
-            else:
-                mac, msg = result
-                rssi = None
-
-            callback(mac, msg, rssi)
+        result = e.irecv(0)
+        if result:
+            recv_queue.append(result)
 
     e.irq(_internal_callback)
+
+
+def get_next_packet():
+    if recv_queue:
+        return recv_queue.pop(0)
+    return None
 
 
 def espnow_receive(timeout_ms=0):
@@ -244,11 +245,10 @@ def load_peers():
         print("[ESP-NOW] No peer file found.")
 
 
-def main():
-    espnow_setup()
-    espnow_set_recv_callback(on_receive)
-    load_peers()
-    
+#def main():
+#    espnow_setup()
+#    espnow_set_recv_callback(on_receive)
+#    load_peers() 
 
 
 
