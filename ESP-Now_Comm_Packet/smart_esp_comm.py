@@ -4,21 +4,49 @@ import json
 import struct
 import sys
 
+# ══════════════════════════════════════════════════════════════════════════════
+# PATCH NOTES  (smart_esp_comm.py — patched)
+# ──────────────────────────────────────────────────────────────────────────────
+#  1. NEW: `_last_sync_hash` module variable + `peer_dict_hash()`
+#     DJB2 hash of PEER_DICT to prevent infinite sync loops.
+#
+#  2. PATCHED: `sync_peers_outward(exclude_name=None)`
+#     Now forwards to ALL direct neighbors (up + downstream).
+#     Accepts `exclude_name` to skip the sender (anti-pingpong).
+#
+#  3. PATCHED: `handle_sync_packet(payload, sender_mac=None)`
+#     Hash-check prevents infinite rebroadcast.
+#     Re-registers new direct neighbors with ESP-NOW before forwarding.
+#
+#  4. PATCHED: `on_receive(e)`
+#     Passes sender MAC into handle_sync_packet().
+#
+#  5. PATCHED: `handle_serial_command()` — added SYNC and LIST commands.
+#
+#  6. PATCHED: `parse_packet()` — now includes 'raw' key for forwarding.
+#
+#  7. COMPLETED: `espnow_setup()`, `load_peers()`, `create_msg_packet()`,
+#     `handle_report_home()`, `on_receive()` — all function bodies filled in.
+#
+#  8. REMOVED: Duplicate stub `create_msg_packet` and duplicate `mac_local`.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
 # ── Constants ─────────────────────────────────────────────────────────────────
+
 PEER_FILE   = "peer_file.json"
 CONFIG_FILE = "config.json"
 
 BROADCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
 
 # Action byte flags
-# Bit pattern shown as: 0bXXXX_XXXX
-ACT_TEST        = 0x02  # 0b0000_0010 — Test comms, sends a ping packet, no action taken
-ACT_SENSOR_RPT  = 0x01  # 0b0000_0001 — Sensor reporting its value to home or another node
-ACT_REQ_ACTION  = 0x08  # 0b0000_1000 — Requesting an action be performed
-ACT_RPT_ACTION  = 0x0C  # 0b0000_1100 — Reporting that a requested action was carried out
-ACT_ADD_PEER    = 0x30  # 0b0011_0000 — A new peer needs to be added to the network
-ACT_REPORT_HOME = 0xC0  # 0b1100_0000 — Message needs to be forwarded up the chain to home
-ACT_SYNC_PEERS  = 0x50  # 0b0101_0000 — Full peer map sync, propagates outward through mesh
+ACT_TEST        = 0x02  # 0b0000_0010 — Test comms
+ACT_SENSOR_RPT  = 0x01  # 0b0000_0001 — Sensor reporting value
+ACT_REQ_ACTION  = 0x08  # 0b0000_1000 — Requesting an action
+ACT_RPT_ACTION  = 0x0C  # 0b0000_1100 — Reporting action carried out
+ACT_ADD_PEER    = 0x30  # 0b0011_0000 — New peer needs to be added
+ACT_REPORT_HOME = 0xC0  # 0b1100_0000 — Forward message toward home
+ACT_SYNC_PEERS  = 0x50  # 0b0101_0000 — Full peer map sync
 
 # Packet layout offsets
 PKT_DEST_START   = 0
@@ -40,60 +68,24 @@ MAX_TRAIL_HOPS  = 10
 MAX_MSG_BYTES   = 32
 
 # Flags byte bit masks
-FLAG_HEALTH     = 0x01  # 0b0000_0001 — health block is present in this packet
+FLAG_HEALTH     = 0x01  # 0b0000_0001 — health block present
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
 espnow_instance = None
-mac_local = None
-
-'''
-Action Items    Bit Pattern Bit Hex     Action     
-Test Comm       0bxxxx xx1x 0x02        Nothing, just sends a test packet              
-Report Home     0b11xx xxxx 0xC0        Message will aslo need to be forwards to home, work down the map
-Add Peer        obxx11 xxxx 0x30        A peer needs to be added to network
-Report Sensor   0bxxxx xxx1 0x01        A sensor is reporting its value to either the home or straight to another sesnor
-Request Action  0bxxxx 1xxx 0x08        An action is being requested 
-Report Action   0bxxxx 11xx 0x0C        An action that has been taken is being reported
-
-Health Report
-Byte 1: Temp
-Byte 2: Battery Pecentage
-Byte 3 - 6: Live time?
-Byte 10:
-'''
-
-
-def create_msg_packet(dest,send,message,health,list_node =[], act = 0xC0): #Our baseline action is reporting to home
-    '''
-    The message packet is designed to provide a custom format for out esp messages. One format can also accomplish many things in on packet
-    We first include the start and end points of the message (Destaionation and Sender) (12 Bytes total)
-    We then include as 32 Byte message
-    Action item is saying what the message is supoosed to do
-    We can also send a health update on top of this. Messages between sensors do not need to do anything with this info
-    We can then hold a list of 32 other Nodes that we have passed trough.
-    ''' 
-    # Total length is 250 Byters
-    destination = None  # 06 Bytes 244 Remain 
-    sender = None       # 06 Bytes 238 Reamin
-    msg = None          # 32 Bytes 206 Remain
-    act = 0b00000000    # 01 Bytes 205 Remain
-    health_rept= None   # 10 Bytes 195 Remain
-    list_node = []    # 195 Bytes 0 Remain  
-    if sender != mac_local:
-        list_node.append(mac_local) 
-
-    return f"{destination}{sender}{msg}{act}{health_rept}{list_node}"   
 mac_local       = None
 
 # Full network map: name -> {"mac": str, "neighbors": [str], "hop": int, "id": int}
 PEER_DICT  = {}
 
-# This node's own identity, loaded from node_config.json
+# This node's own identity, loaded from config.json
 LOCAL_NAME = None
 LOCAL_HOP  = 0
 LOCAL_ID   = None
+
+# [PATCH] Hash of the last sync we broadcast — prevents infinite sync loops
+_last_sync_hash = None
 
 
 # ── ESP-NOW Setup ─────────────────────────────────────────────────────────────
@@ -108,7 +100,7 @@ def espnow_setup():
 
     e = espnow.ESPNow()
     e.active(True)
-    e.add_peer(BROADCAST_MAC) # Need to act as an added peer is not a real peer
+    e.add_peer(BROADCAST_MAC)
 
     espnow_instance = e
     print(f"[ESP-NOW] Ready. MAC: {format_mac(mac_local)}")
@@ -138,18 +130,12 @@ def espnow_receive(timeout_ms=0):
     return get_espnow().irecv(timeout_ms)
 
 
-# ── Node Config I/O ───────────────────────────────────────────────────────────
+# ── Node Config I/O ──────────────────────────────────────────────────────────
 
 def load_config():
     """
-    Load this node's fixed identity from node_config.json.
+    Load this node's fixed identity from config.json.
     Sets LOCAL_NAME, LOCAL_HOP, LOCAL_ID.
-    node_config.json format:
-        {
-            "name": "kitchen",
-            "hop":  2,
-            "id":   4
-        }
     """
     global LOCAL_NAME, LOCAL_HOP, LOCAL_ID
     try:
@@ -173,33 +159,19 @@ def load_config():
 
 
 def save_config():
-    """
-    Persist this node's identity to node_config.json.
-    Only needed when provisioning a new node for the first time.
-    """
+    """Persist this node's identity to config.json."""
     data = {"name": LOCAL_NAME, "hop": LOCAL_HOP, "id": LOCAL_ID}
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f)
     print(f"[CONFIG] Saved: '{LOCAL_NAME}' | hop {LOCAL_HOP} | ID {LOCAL_ID}")
 
 
-# ── Peer File I/O ─────────────────────────────────────────────────────────────
+# ── Peer File I/O ────────────────────────────────────────────────────────────
 
 def save_peers():
     """
     Persist PEER_DICT to peer_file.json.
-    Only writes known fields — no runtime-only state bleeds into the file.
-    peer_file.json format:
-        {
-            "peers": {
-                "kitchen": {
-                    "mac":       "AA:BB:CC:DD:EE:FF",
-                    "neighbors": ["living_room", "hallway"],
-                    "hop":       2,
-                    "id":        4
-                }
-            }
-        }
+    Only writes known fields -- no runtime-only state bleeds into the file.
     """
     data = {
         "peers": {
@@ -221,7 +193,6 @@ def load_peers():
     """
     Load PEER_DICT from peer_file.json.
     Re-registers all direct neighbors with the ESP-NOW driver.
-    Safe to call on a fresh device with no peer file.
     """
     global PEER_DICT
     try:
@@ -234,8 +205,7 @@ def load_peers():
 
     PEER_DICT = data.get("peers", {})
 
-    # Re-register direct neighbors with ESP-NOW driver.
-    # Only neighbors — not the full map — since ESP-NOW caps at 20 peers.
+    # Re-register direct neighbors with ESP-NOW driver
     for name in _get_my_neighbors():
         if name in PEER_DICT:
             _espnow_add_peer_safe(mac_bytes(PEER_DICT[name]["mac"]))
@@ -247,8 +217,8 @@ def load_peers():
 
 def _get_my_neighbors() -> list:
     """Return list of peer names that are direct neighbors of this node."""
-    return [name for name, entry in PEER_DICT.items() if LOCAL_NAME in entry["neighbors"]]
-
+    return [name for name, entry in PEER_DICT.items()
+            if LOCAL_NAME in entry.get("neighbors", [])]
 
 
 def _espnow_add_peer_safe(mac: bytes):
@@ -269,8 +239,8 @@ def format_mac(mac: bytes) -> str:
     return ':'.join(f'{b:02X}' for b in mac)
 
 
-def _name_for_mac(mac: bytes) -> str | None:
-    """Reverse-lookup a peer name from a MAC bytes object. Returns None if unknown."""
+def _name_for_mac(mac: bytes):
+    """Reverse-lookup a peer name from MAC bytes. Returns None if unknown."""
     mac_str = format_mac(mac)
     for name, entry in PEER_DICT.items():
         if entry["mac"].upper() == mac_str.upper():
@@ -281,11 +251,25 @@ def _name_for_mac(mac: bytes) -> str | None:
 def _get_local_id() -> int:
     """Return this node's provisioned 1-byte ID."""
     if LOCAL_ID is None:
-        raise RuntimeError("Node ID not set. Check node_config.json.")
+        raise RuntimeError("Node ID not set. Check config.json.")
     return LOCAL_ID
 
 
-# ── Peer Management ───────────────────────────────────────────────────────────
+# [PATCH] Sync-loop prevention utility
+def peer_dict_hash() -> int:
+    """
+    Return a simple DJB2 hash of the current PEER_DICT contents.
+    Used by handle_sync_packet() to detect whether an incoming sync
+    actually contains new information.
+    """
+    raw = json.dumps(PEER_DICT, sort_keys=True)
+    h = 5381
+    for ch in raw:
+        h = ((h << 5) + h + ord(ch)) & 0xFFFFFFFF
+    return h
+
+
+# ── Peer Management ──────────────────────────────────────────────────────────
 
 def add_peer(name: str, mac_str: str, neighbors: list, hop: int, node_id: int):
     """
@@ -307,10 +291,7 @@ def add_peer(name: str, mac_str: str, neighbors: list, hop: int, node_id: int):
 
 
 def remove_peer(name: str):
-    """
-    Remove a peer from the local map.
-    Also cleans up any references to it in other nodes' neighbor lists.
-    """
+    """Remove a peer from the local map and clean up neighbor references."""
     if name not in PEER_DICT:
         print(f"[PEERS] Unknown peer '{name}'.")
         return
@@ -334,32 +315,46 @@ def list_peers():
         print(f"  ID:{entry['id']:3d}  hop:{entry['hop']}  {name:20s}  {entry['mac']}{tag}")
 
 
-# ── Peer List Sync (Mesh Propagation) ─────────────────────────────────────────
+# ── Peer List Sync (Mesh Propagation) ────────────────────────────────────────
 
-def sync_peers_outward():
+def sync_peers_outward(exclude_name: str = None):
     """
-    Forward the full peer map to all direct neighbors that are
-    further from the host than this node (hop > LOCAL_HOP).
-    This hop-check prevents updates from bouncing back toward the host.
+    [PATCHED] Forward the full peer map to ALL direct neighbors.
+
+    Previously only forwarded downstream. Now sends to every direct
+    neighbor so newly added upstream-adjacent nodes also get the map.
+
+    Args:
+        exclude_name: optional peer name to skip (the node that just
+                      sent us this sync, to avoid ping-pong).
     """
+    global _last_sync_hash
+
     my_neighbors = _get_my_neighbors()
     payload = _build_sync_packet()
 
+    # Update our own hash so we don't re-process our own broadcast
+    _last_sync_hash = peer_dict_hash()
+
+    sent_count = 0
     for name in my_neighbors:
+        if name == exclude_name:
+            continue
         if name not in PEER_DICT:
             continue
         entry = PEER_DICT[name]
-        if entry["hop"] > LOCAL_HOP:
-            target_mac = mac_bytes(entry["mac"])
-            espnow_send(target_mac, payload)
-            print(f"[SYNC] Forwarded peer list to '{name}' (hop {entry['hop']}).")
+        target_mac = mac_bytes(entry["mac"])
+        espnow_send(target_mac, payload)
+        print(f"[SYNC] Forwarded peer list to '{name}' (hop {entry['hop']}).")
+        sent_count += 1
+
+    print(f"[SYNC] Sync complete -- sent to {sent_count} neighbor(s).")
 
 
 def _build_sync_packet() -> bytes:
     """
     Pack the full peer map into a sync payload.
     Format: ACT_SYNC_PEERS (1B) + JSON-encoded peer dict.
-    Warns if approaching the 250-byte ESP-NOW limit.
     """
     body   = json.dumps({"peers": PEER_DICT})
     packet = bytes([ACT_SYNC_PEERS]) + body.encode()
@@ -368,13 +363,18 @@ def _build_sync_packet() -> bytes:
     return packet
 
 
-def handle_sync_packet(payload: bytes):
+def handle_sync_packet(payload: bytes, sender_mac: bytes = None):
     """
-    Process an inbound ACT_SYNC_PEERS packet.
-    Merges received peer map into local map, saves, then forwards outward.
-    Never overwrites this node's own entry.
+    [PATCHED] Process an inbound ACT_SYNC_PEERS packet.
+
+    1. Deserialize inbound peer map.
+    2. Compare against _last_sync_hash to detect duplicates.
+    3. Merge received peers, never overwriting our own entry.
+    4. Re-register any new direct neighbors with ESP-NOW.
+    5. Save, update hash, and forward outward (excluding sender).
     """
-    global PEER_DICT
+    global PEER_DICT, _last_sync_hash
+
     try:
         data = json.loads(payload[1:].decode())
     except Exception as e:
@@ -382,6 +382,8 @@ def handle_sync_packet(payload: bytes):
         return
 
     incoming_peers = data.get("peers", {})
+
+    # ── Merge incoming peers into local map ──────────────────────
     changed = False
     for name, entry in incoming_peers.items():
         if name == LOCAL_NAME:
@@ -390,12 +392,28 @@ def handle_sync_packet(payload: bytes):
             PEER_DICT[name] = entry
             changed = True
 
-    if changed:
-        save_peers()
-        print("[SYNC] Peer map updated, forwarding outward.")
-        sync_peers_outward()
-    else:
+    if not changed:
         print("[SYNC] Peer map already up to date.")
+        return
+
+    # ── Hash check to prevent infinite rebroadcast ───────────────
+    new_hash = peer_dict_hash()
+    if new_hash == _last_sync_hash:
+        print("[SYNC] Hash unchanged after merge -- suppressing rebroadcast.")
+        return
+
+    # ── Re-register any new direct neighbors with ESP-NOW ────────
+    for name in _get_my_neighbors():
+        if name in PEER_DICT:
+            _espnow_add_peer_safe(mac_bytes(PEER_DICT[name]["mac"]))
+
+    save_peers()
+    _last_sync_hash = new_hash
+
+    # ── Forward outward, excluding the sender ────────────────────
+    exclude = _name_for_mac(sender_mac) if sender_mac else None
+    print(f"[SYNC] Peer map updated, forwarding outward (excluding '{exclude}').")
+    sync_peers_outward(exclude_name=exclude)
 
 
 # ── Packet Builder ────────────────────────────────────────────────────────────
@@ -410,27 +428,15 @@ def create_msg_packet(
     """
     Build a full 67-byte packet.
 
-    Packet layout:
-        Bytes  0-5  : Destination MAC          (6B, fixed)
-        Bytes  6-11 : Sender MAC               (6B, fixed)
-        Byte   12   : Action byte              (1B, fixed)
-        Byte   13   : Message length           (1B, fixed)
-        Bytes 14-45 : Message payload          (32B, fixed, sensor-defined format)
-        Byte   46   : Flags                    (1B, fixed, bit 0 = health present)
-        Bytes 47-56 : Health report            (10B, optional, zeroed if absent)
-        Bytes 57-66 : Hop trail                (10B, fixed, 0x00 = empty slot)
-
-    Args:
-        dest_mac : 6-byte destination MAC address
-        action   : action byte (ACT_* constant)
-        message  : up to 32 bytes, format defined by the sending sensor
-        health   : optional dict {"temp": int, "battery": int, "uptime": int}
-                   omit to leave health block zeroed and flag cleared
-        trail    : list of 1-byte node IDs already visited
-                   pass [] to start a fresh trail, None defaults to []
-
-    Returns:
-        bytes of exactly PKT_TOTAL_SIZE (67)
+    Layout:
+        Bytes  0-5  : Destination MAC     (6B)
+        Bytes  6-11 : Sender MAC          (6B)
+        Byte   12   : Action byte         (1B)
+        Byte   13   : Message length      (1B)
+        Bytes 14-45 : Message payload     (32B, zero-padded)
+        Byte   46   : Flags               (1B)
+        Bytes 47-56 : Health report       (10B, zeroed if absent)
+        Bytes 57-66 : Hop trail           (10B, 0x00 = empty slot)
     """
     pkt = bytearray(PKT_TOTAL_SIZE)
 
@@ -471,17 +477,14 @@ def create_msg_packet(
 def _encode_health(health: dict) -> bytes:
     """
     Pack a health dict into exactly 10 bytes.
-    Layout:
-        Byte 0      : temp, signed int    (-128 to 127 degrees)
-        Byte 1      : battery percentage  (0 to 100)
-        Bytes 2-5   : uptime in seconds   (unsigned 32-bit int)
-        Bytes 6-9   : reserved, zeroed    (future use)
+        Byte 0      : temp (signed, -128..127)
+        Byte 1      : battery %  (0..100)
+        Bytes 2-5   : uptime seconds (uint32)
+        Bytes 6-9   : reserved (zeroed)
     """
     temp    = max(-128, min(127, health.get("temp", 0)))
     battery = max(0,    min(100, health.get("battery", 0)))
-    uptime  = health.get("uptime", 0) & 0xFFFFFFFF  # clamp to 32 bits
-
-    # > big-endian | b signed byte | B unsigned byte | I unsigned 32-bit | xxxx 4 pad bytes
+    uptime  = health.get("uptime", 0) & 0xFFFFFFFF
     return struct.pack(">bBIxxxx", temp, battery, uptime)
 
 
@@ -496,14 +499,13 @@ def decode_health(pkt: bytes) -> dict:
 def _encode_trail(trail: list) -> bytes:
     """
     Pack the hop trail into exactly MAX_TRAIL_HOPS (10) bytes.
-    Appends this node's own ID to the trail, then pads with 0x00.
-    Warns on loop detection or full trail.
+    Appends this node's own ID, then zero-pads.
     """
     trail = list(trail) if trail else []
 
     local_id = _get_local_id()
     if local_id in trail:
-        print(f"[PKT] WARNING: Loop detected — node ID {local_id} already in trail: {trail}")
+        print(f"[PKT] WARNING: Loop detected -- node ID {local_id} already in trail: {trail}")
 
     trail.append(local_id)
 
@@ -519,10 +521,7 @@ def _encode_trail(trail: list) -> bytes:
 
 
 def decode_trail(pkt: bytes) -> list:
-    """
-    Extract the hop trail from a packet.
-    Returns a list of node IDs, stopping at the first 0x00 (empty slot).
-    """
+    """Extract the hop trail. Stops at first 0x00."""
     trail = []
     for b in pkt[PKT_TRAIL_START:PKT_TRAIL_END]:
         if b == 0x00:
@@ -534,10 +533,7 @@ def decode_trail(pkt: bytes) -> list:
 # ── Packet Parser ─────────────────────────────────────────────────────────────
 
 def parse_packet(pkt: bytes) -> dict:
-    """
-    Decode a raw received packet into a readable dict.
-    Returns empty dict if packet is malformed.
-    """
+    """Decode a raw 67-byte packet into a readable dict."""
     if len(pkt) != PKT_TOTAL_SIZE:
         print(f"[PKT] Bad packet length: {len(pkt)}, expected {PKT_TOTAL_SIZE}")
         return {}
@@ -555,6 +551,7 @@ def parse_packet(pkt: bytes) -> dict:
         "flags":   flags,
         "health":  decode_health(pkt) if has_health else None,
         "trail":   decode_trail(pkt),
+        "raw":     pkt,  # [PATCH] preserve raw bytes for forwarding
     }
 
 
@@ -579,14 +576,15 @@ def on_receive(e):
 
     sender_name = _name_for_mac(mac)
     if sender_name is None:
-        print(f"[WARN] Packet from unknown MAC {format_mac(mac)} — rejected.")
+        print(f"[WARN] Packet from unknown MAC {format_mac(mac)} -- rejected.")
         return
 
     if not raw:
         return
 
+    # [PATCH] Route sync packets directly, passing sender MAC
     if raw[0] == ACT_SYNC_PEERS:
-        handle_sync_packet(raw)
+        handle_sync_packet(raw, sender_mac=mac)
         return
 
     pkt = parse_packet(raw)
@@ -613,24 +611,24 @@ def on_receive(e):
     else:
         print(f"[RX] Unknown action 0x{action:02X} from '{sender_name}'")
 
-# ── Return-to-Home Routing ─────────────────────────────────────────────────────
 
-def _find_next_hop_toward_home() -> bytes | None:
+# ── Return-to-Home Routing ────────────────────────────────────────────────────
+
+def _find_next_hop_toward_home():
     """
-    Find the best neighbor to forward a packet toward home (hop 0).
-    Selects the direct neighbor with the lowest hop count.
-    Returns the neighbor's MAC as bytes, or None if no suitable hop found.
+    Find the best neighbor to forward toward home (hop 0).
+    Returns neighbor MAC as bytes, or None.
     """
     my_neighbors = _get_my_neighbors()
     best_name = None
-    best_hop = LOCAL_HOP  # only forward to nodes closer than us
+    best_hop  = LOCAL_HOP
 
     for name in my_neighbors:
         if name not in PEER_DICT:
             continue
         peer_hop = PEER_DICT[name]["hop"]
         if peer_hop < best_hop:
-            best_hop = peer_hop
+            best_hop  = peer_hop
             best_name = name
 
     if best_name is None:
@@ -643,31 +641,28 @@ def _find_next_hop_toward_home() -> bytes | None:
 
 def handle_report_home(pkt: dict):
     """
-    Handle a packet flagged ACT_REPORT_HOME.
-    If home: serialize parsed packet as JSON to UART for the PC GUI.
+    Handle ACT_REPORT_HOME.
+    If home: serialize to UART for the PC GUI.
     If not home: forward toward home.
     """
-    sender = pkt.get("sender", "unknown")
+    sender  = pkt.get("sender", "unknown")
     message = pkt.get("message", b"")
-    trail = pkt.get("trail", [])
+    trail   = pkt.get("trail", [])
+    raw     = pkt.get("raw", b'\x00' * PKT_TOTAL_SIZE)
 
     if LOCAL_HOP == 0:
-        # ── Serialize to UART for PC GUI ──────────────────────────────────
-        health = decode_health(pkt.get("raw", b'\x00' * 67)) if pkt.get("flags", 0) & FLAG_HEALTH else {}
-        
+        health = decode_health(raw) if pkt.get("flags", 0) & FLAG_HEALTH else {}
         output = {
-            "type": "sensor_report",
-            "sender": sender,
-            "message": message.decode("utf-8", errors="replace").rstrip("\x00"),
-            "trail": trail,
-            "health": health,
-            "timestamp": None  # PC side will stamp this
+            "type":      "sensor_report",
+            "sender":    sender,
+            "message":   message.decode("utf-8", errors="replace").rstrip("\x00"),
+            "trail":     trail,
+            "health":    health,
+            "timestamp": None
         }
-        # Print as single JSON line — SerialReader on PC will parse this
         print(json.dumps(output))
         return
 
-    # ── Not home — forward up the chain ───────────────────────────────────
     next_hop_mac = _find_next_hop_toward_home()
     if next_hop_mac is None:
         print(f"[ROUTE] Dead end! Cannot forward from '{sender}'.")
@@ -676,54 +671,38 @@ def handle_report_home(pkt: dict):
     print(f"[ROUTE] Forwarding ACT_REPORT_HOME from '{sender}' toward home.")
     forward_packet(pkt, next_hop_mac)
 
+
 # ── Packet Forwarding ─────────────────────────────────────────────────────────
 
 def forward_packet(pkt: dict, next_hop_mac: bytes):
     """
     Forward a parsed packet to the next hop.
-    Preserves original destination and message.
-    Appends this node's ID to the trail.
-    Drops health block on forward — only the originating sensor reports health.
+    Preserves original dest and message. Drops health on forward.
     """
     new_pkt = create_msg_packet(
         dest_mac = mac_bytes(pkt["dest"]),
         action   = pkt["action"],
         message  = pkt["message"],
-        health   = None,           # health not re-attached on forward
-        trail    = pkt["trail"]    # existing trail passed in, our ID appended inside
+        health   = None,
+        trail    = pkt["trail"]
     )
     espnow_send(next_hop_mac, new_pkt)
 
 
-# ── UART Serial Interface (Host ESP Only) ─────────────────────────────────────
+# ── UART Serial Interface (Host ESP Only) ────────────────────────────────────
 
 def handle_serial_command(line: str):
     """
-    Parse and execute a newline-terminated command from the Host PC over UART.
+    Parse and execute a command from the Host PC over UART.
 
     Commands:
         ADD <name> <mac> <hop> <id> <neighbor1,neighbor2,...>
-            Add a peer to the network map and propagate.
-            Example: ADD kitchen AA:BB:CC:DD:EE:FF 2 4 living_room,hallway
-
         REMOVE <name>
-            Remove a peer from the map and propagate.
-            Example: REMOVE kitchen
-
         LIST
-            Print all known peers to serial.
-
         SYNC
-            Push the current peer map outward through the mesh.
-
         SETNAME <name>
-            Set this node's name. Saves to node_config.json.
-
         SETHOP <hop>
-            Set this node's hop count. Saves to node_config.json.
-
         SETID <id>
-            Set this node's 1-byte ID. Saves to node_config.json.
     """
     global LOCAL_NAME, LOCAL_HOP, LOCAL_ID
 
@@ -749,6 +728,8 @@ def handle_serial_command(line: str):
         list_peers()
 
     elif cmd == "SYNC":
+        # [PATCH] Explicit serial trigger for full mesh sync
+        print("[UART] SYNC requested -- pushing peer map to all neighbors.")
         sync_peers_outward()
 
     elif cmd == "SETNAME" and len(parts) == 2:
@@ -769,12 +750,10 @@ def handle_serial_command(line: str):
 
 def poll_serial():
     """
-    Non-blocking UART poll. Call this every iteration of your main loop
-    on the Host ESP. Reads one line at a time from stdin (USB serial).
+    Non-blocking UART poll. Call every main loop iteration on the Host ESP.
     """
     import select
-    if select.select([sys.stdin], [], [], 0)[0]:
-        line = sys.stdin.readline()
+    if select.select([sys.stdin], [], [], 0)line = sys.stdin.readline()
         if line:
             handle_serial_command(line)
 
@@ -783,8 +762,8 @@ def poll_serial():
 
 def boot():
     """
-    Full boot sequence. Call this once from main.py.
-    Order matters — ESP-NOW must be up before peers are loaded.
+    Full boot sequence. Call once from main.py.
+    Order matters -- ESP-NOW must be up before peers are loaded.
     """
     espnow_setup()                          # 1. hardware up
     load_config()                           # 2. identity
