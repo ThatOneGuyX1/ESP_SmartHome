@@ -84,23 +84,32 @@ LOCAL_NAME = None
 LOCAL_HOP  = 0
 LOCAL_ID   = None
 
+REQUEST_FLAG = False  # Global flag set by ACT_REQ_ACTION, for main loop to check
+
 # [PATCH] Hash of the last sync we broadcast — prevents infinite sync loops
 _last_sync_hash = None
 
 
+def check_request_flag():
+    global REQUEST_FLAG
+    return REQUEST_FLAG
 # ── ESP-NOW Setup ─────────────────────────────────────────────────────────────
 
 def espnow_setup():
     """Initialize WLAN + ESP-NOW. Call once at boot before anything else."""
     global espnow_instance, mac_local
 
+    
     sta = network.WLAN(network.WLAN.IF_STA)
     sta.active(True)
     mac_local = sta.config('mac')
 
     e = espnow.ESPNow()
+    try:
+        e.active(False)  # tear down any existing session
+    except OSError:
+        pass
     e.active(True)
-    e.add_peer(BROADCAST_MAC)
 
     espnow_instance = e
     print(f"[ESP-NOW] Ready. MAC: {format_mac(mac_local)}")
@@ -604,6 +613,8 @@ def on_receive(e):
 
     elif action == ACT_REQ_ACTION:
         print(f"[ACTION] Request from '{sender_name}': {pkt['message']}")
+        global REQUEST_FLAG
+        REQUEST_FLAG = True  # Set a global flag that the main loop can check
 
     elif action == ACT_RPT_ACTION:
         print(f"[ACTION] Report from '{sender_name}': {pkt['message']}")
@@ -753,7 +764,8 @@ def poll_serial():
     Non-blocking UART poll. Call every main loop iteration on the Host ESP.
     """
     import select
-    if select.select([sys.stdin], [], [], 0)line = sys.stdin.readline()
+    if select.select([sys.stdin], [], [], 0)[0]:  # ← was missing [0]:
+        line = sys.stdin.readline()
         if line:
             handle_serial_command(line)
 
