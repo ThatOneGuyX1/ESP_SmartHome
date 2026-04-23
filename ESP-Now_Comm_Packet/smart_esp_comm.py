@@ -102,6 +102,9 @@ def espnow_setup():
     
     sta = network.WLAN(network.WLAN.IF_STA)
     sta.active(True)
+
+    sta.disconnect()
+    sta.config(channel=6)
     mac_local = sta.config('mac')
 
     e = espnow.ESPNow()
@@ -569,8 +572,16 @@ def parse_packet(pkt: bytes) -> dict:
 def espnow_send(peer_mac: bytes, packet: bytes):
     """Send a packet to a peer MAC. Peer must already be registered."""
     e = get_espnow()
+
+    print("Sending lenght: ", len(packet))
+    print("Type: ", type(packet))
+
+    if len(packet) > 250:
+        print("[ERROR] Packet too large: ", len(packet))
+        return
+
     try:
-        e.send(peer_mac, packet)
+        e.send(peer_mac, bytes(packet))
     except OSError as err:
         print(f"[ESP-NOW] Send failed to {format_mac(peer_mac)}: {err}")
 
