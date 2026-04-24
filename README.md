@@ -10,6 +10,9 @@ Materials needed:
   - SGP41 Air Quality Sensor Module
   - A liquid conductivity sensor
   - The Raspberry Pi Camera Module
+  - DHT20 I2C Temperature and Humidity Sensor
+  - BH1750 Ambient Light Sensor
+  - A PIR (passive infrared) Sensor
 * A way to create electrical connections between components (Depending on the materials you have, this may be wires and a breadboard, solder and printed circuit boards, or some other setup I'm not aware of)
 
 ## Installation
