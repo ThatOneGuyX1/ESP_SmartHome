@@ -1,113 +1,206 @@
 from common_esp import *
 import time
 
+# =========================
+# SETUP
+# =========================
 espnow_setup()
 espnow_set_recv_callback()
 
 print("HOST MAC:", format_mac(get_local_mac()))
 
 NETWORK_MAP = {}
-KNOWN_PEERS = set()   # TRACK KNOWN PEERS
+KNOWN_PEERS = set()
 
-def process_packet(mac, msg, rssi):
+# =========================
+# TIMERS
+# =========================
+last_display = 0
+last_rssi_update = 0
+
+# =========================
+# PROCESS PACKETS
+# =========================
+def process_packet(mac, msg):
+
     data = parse_msg_packet(msg)
+
     if not data:
         return
 
-    sender = data["sender"]
-    sender_mac_bytes = bytes.fromhex(sender.replace(':',''))
+    sender_mac = data["sender"]
 
-    # Only add peer ONCE
-    if sender_mac_bytes not in KNOWN_PEERS:
-        espnow_add_peer(sender_mac_bytes)
-        KNOWN_PEERS.add(sender_mac_bytes)
+    # -------------------------
+    # ADD NEW PEERS
+    # -------------------------
+    if sender_mac not in KNOWN_PEERS:
 
-    # Get RSSI from peers_table
+        espnow_add_peer(sender_mac)
+        KNOWN_PEERS.add(sender_mac)
+
+        print(f"[NEW PEER] {format_mac(sender_mac)}")
+
+    # -------------------------
+    # GET RSSI
+    # -------------------------
     e = get_espnow()
-    peer_info = e.peers_table.get(sender_mac_bytes, None)
 
-    if peer_info:
-        rssi = peer_info[0]
-    else:
-        rssi = None
+    peer_info = e.peers_table.get(sender_mac, None)
 
-    # Compute latency
+    rssi = peer_info[0] if peer_info else None
+
+    # -------------------------
+    # LATENCY
+    # -------------------------
     now = time.ticks_ms()
-    latency = time.ticks_diff(now, data["timestamp"])
 
-    # Update network map
-    NETWORK_MAP[sender] = {
+    latency = time.ticks_diff(
+        now,
+        data["timestamp"]
+    )
+
+    # -------------------------
+    # UPDATE NETWORK MAP
+    # -------------------------
+    NETWORK_MAP[format_mac(sender_mac)] = {
         "last_seen": now,
         "battery": data["battery"],
         "rssi": rssi,
-        "latency": latency
+        "latency": latency,
+        "path": [format_mac(p) for p in data["path"]]
     }
 
-    # Send reply (keeps connection alive)
-    reply_packet = create_msg_packet(
-        dest=sender_mac_bytes,
-        send=get_local_mac(),
-        message="ack",
-        health={"bat": 100},
-        act=0x03
-    )
-
-    espnow_send(sender_mac_bytes, reply_packet)
-
-
+# =========================
+# DISPLAY NETWORK
+# =========================
 def display_network():
-    print("\n" + "="*50)
+
+    print("\n" + "=" * 50)
     print("NETWORK MAP")
-    print("="*50)
+    print("=" * 50)
 
     now = time.ticks_ms()
 
     for node, info in list(NETWORK_MAP.items()):
-        age = time.ticks_diff(now, info["last_seen"])
 
-        # Remove dead nodes (>15 sec)
+        age = time.ticks_diff(
+            now,
+            info["last_seen"]
+        )
+
+        # Remove dead nodes
         if age > 15000:
+
+            print(f"[TIMEOUT] Removing {node}")
+
             del NETWORK_MAP[node]
             continue
 
-        # Signal quality label
-        if info["rssi"] is None:
-            signal = "UNKNOWN"
-        elif info["rssi"] > -50:
-            signal = "STRONG"
-        elif info["rssi"] > -70:
-            signal = "MEDIUM"
-        else:
-            signal = "WEAK"
-
         print(f"""
 Node: {node}
-  RSSI: {info['rssi']} ({signal})
+  RSSI: {info['rssi']}
   Latency: {info['latency']} ms
   Battery: {info['battery']}%
+  Path: {' -> '.join(info['path'])}
   Last Seen: {age} ms ago
 """)
 
-    print("="*50)
+    print("=" * 50)
 
+# =========================
+# FIND STRONGEST NODE
+# =========================
+def find_strongest_node():
 
-# Main loop
-last_display = 0
+    best_node = None
+    best_rssi = -999
 
+    for mac_str, info in NETWORK_MAP.items():
+
+        rssi = info["rssi"]
+
+        if rssi is None:
+            continue
+
+        if rssi > best_rssi:
+
+            best_rssi = rssi
+            best_node = mac_str
+
+    return best_node, best_rssi
+
+# =========================
+# BROADCAST STRONGEST NODE
+# =========================
+def broadcast_strongest_node():
+
+    best_node, best_rssi = find_strongest_node()
+
+    if not best_node:
+        return
+
+    best_mac = bytes(
+        int(x, 16)
+        for x in best_node.split(':')
+    )
+
+    packet = create_msg_packet(
+        dest=best_mac,
+        send=get_local_mac(),
+        message="STRONGEST",
+        health={"bat": 100},
+        act=0xD1
+    )
+
+    # Broadcast to ALL nodes
+    espnow_send(
+        b'\xff\xff\xff\xff\xff\xff',
+        packet
+    )
+
+    print(f"""
+[HOST]
+Strongest Node:
+  {best_node}
+  RSSI = {best_rssi}
+""")
+
+# =========================
+# MAIN LOOP
+# =========================
 while True:
+    # -------------------------
+    # RECEIVE PACKETS
+    # -------------------------
     pkt = get_next_packet()
 
     if pkt:
-        if len(pkt) == 3:
-            mac, msg, rssi = pkt
-        else:
-            mac, msg = pkt
-            rssi = None
+        mac, msg = pkt[:2]
 
         if msg:
-            process_packet(mac, msg, rssi)
+            process_packet(mac, msg)
 
-    # refresh display every 2 seconds
-    if time.ticks_diff(time.ticks_ms(), last_display) > 2000:
+    # -------------------------
+    # DISPLAY NETWORK
+    # -------------------------
+    if time.ticks_diff(
+        time.ticks_ms(),
+        last_display
+    ) > 2000:
+
         display_network()
+
         last_display = time.ticks_ms()
+
+    # -------------------------
+    # UPDATE STRONGEST NODE
+    # EVERY 5 SECONDS
+    # -------------------------
+    if time.ticks_diff(
+        time.ticks_ms(),
+        last_rssi_update
+    ) > 5000:
+
+        broadcast_strongest_node()
+
+        last_rssi_update = time.ticks_ms()
