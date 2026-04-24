@@ -19,7 +19,7 @@ Materials needed:
 
 ### Host computer
 
-Install python on your host computer. Then run 
+Install python on your host computer, and copy esp32_rpi_bridge/main.py, esp32_rpi_bridge/camera_mesh.py, and node_a_micropython to a directory. Then run main.py from that directory as a python script. 
 
 ### Featherboard V2
 
