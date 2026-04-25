@@ -60,7 +60,7 @@ try:
         motion_detected = any(cv2.contourArea(c) > MIN_AREA for c in contours)
 
         if motion_detected:
-            comm.send_motion()
+            #comm.send_motion()
 
             # --- AI DETECTION (EXPENSIVE) ---
             # 1. Convert Grayscale to RGB (Required by MobileNet)

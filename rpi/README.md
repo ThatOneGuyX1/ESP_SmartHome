@@ -1,7 +1,17 @@
 # Raspberry Pi Node — Setup Guide
 
-Camera-based motion and person detection node for the ESP SmartHome mesh.  
-Runs `detection_v2.py` and communicates with the ESP32 gateway over UDP.
+Camera-based person detection node for the ESP SmartHome mesh.  
+Runs `detection_v2.py` and sends confirmed person detections over UDP to the
+ESP32 Feather V2 bridge node, which forwards them onto the ESP-NOW mesh.
+
+```
+Raspberry Pi  ──UDP/WiFi──►  ESP32 Feather V2  ──ESP-NOW──►  Mesh / Host
+(this device)                (bridge node)
+```
+
+> The ESP32 bridge is required — the Pi cannot speak ESP-NOW directly.
+> Motion events are detected locally but not forwarded; only AI-confirmed
+> person detections are sent.
 
 ---
 
@@ -131,7 +141,7 @@ python3 -c "import cv2; print(cv2.__version__)"
 
 ## 6. Configure UDP Communication
 
-Open `udp_comm.py` and set the ESP32's IP address:
+Open `udp_comm.py` and set the ESP32 bridge node's IP address:
 ```bash
 nano udp_comm.py
 ```
@@ -142,6 +152,10 @@ ESP32_IP = "192.168.x.x"   # replace with your ESP32 Feather V2's actual IP
 ```
 
 > The ESP32's IP is printed to its serial monitor on boot: `[WiFi] Connected — IP: x.x.x.x`
+
+The Pi sends to the ESP32 on **port 5005** and listens for ACKs on **port 5006**.
+The ESP32 receives person events and forwards them onto the ESP-NOW mesh as
+`ACT_REPORT_HOME` packets routed toward the host node.
 
 ---
 
@@ -167,13 +181,16 @@ python3 detection_v2.py
 Expected output:
 ```
 Loading AI model from .../model/mobilenet_iter_73000.caffemodel...
-[UDP] Comm ready — sending to 192.168.x.x:5005, listening on :6006
+[UDP] Comm ready — sending to 192.168.x.x:5005, listening on :5006
 System Live: Monitoring...
 Status: Scanning...
-[UDP] Sent: {'event': 'motion', ...}
 !!! PERSON DETECTED (0.87)
 [UDP] Sent: {'event': 'person', 'confidence': 0.87, ...}
+[UDP] Received from (...): {'ack': 'ok', 'event': 'person'}
 ```
+
+Motion events are detected locally as a gate for the AI model but are not
+sent to the ESP32. Only confirmed person detections are forwarded.
 
 Stop with `Ctrl+C`.
 
