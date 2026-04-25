@@ -52,9 +52,11 @@ try:
             avg_frame = gray.copy().astype("float")
             continue
 
-        cv2.accumulateWeighted(gray, avg_frame, 0.05)
+        cv2.accumulateWeighted(gray, avg_frame, 0.01)
         frame_delta = cv2.absdiff(gray, cv2.convertScaleAbs(avg_frame))
         thresh = cv2.threshold(frame_delta, THRESHOLD_VAL, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        thresh = cv2.erode(thresh, None, iterations=1)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         motion_detected = any(cv2.contourArea(c) > MIN_AREA for c in contours)

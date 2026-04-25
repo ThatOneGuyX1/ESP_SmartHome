@@ -163,6 +163,7 @@ The ESP32 receives person events and forwards them onto the ESP-NOW mesh as
 
 With the ESP32 running its firmware, test the link from the Pi:
 ```bash
+python3 -m venv env
 source env/bin/activate   # if using venv
 python3 udp_comm.py
 ```
@@ -196,7 +197,51 @@ Stop with `Ctrl+C`.
 
 ---
 
-## 9. (Optional) Run on Boot
+## 9. (Optional) Interactive Detection Tuner
+
+If you are getting false positives or missed detections, use the live tuning
+UI to adjust parameters while watching the annotated camera feed in your browser.
+
+Install Flask into the venv:
+```bash
+source env/bin/activate
+pip install flask
+```
+
+Run the tuner:
+```bash
+python3 tuning.py
+```
+
+Open in your browser on any device on the same network:
+```
+http://<pi-ip>:8000
+```
+
+The UI shows the live camera feed with overlays and three sliders:
+
+| Slider | Default | Effect |
+|---|---|---|
+| Confidence threshold | 0.50 | Raise to reduce AI false positives |
+| Min motion area (px²) | 2500 | Raise to ignore small pixel noise |
+| Motion pixel threshold | 35 | Raise to ignore subtle lighting changes |
+
+Yellow contours show motion areas. Red boxes are person detections. Green boxes
+are other detected objects. The MOTION and PERSON badges update every 500ms.
+
+Once you find values that eliminate false positives, copy them into
+`detection_v2.py` at the top of the file:
+```python
+MIN_AREA       = 5000   # example tuned value
+THRESHOLD_VAL  = 50
+CONF_THRESHOLD = 0.70
+```
+
+Stop the tuner with `Ctrl+C`.
+
+---
+
+## 10. (Optional) Run on Boot
 
 To start detection automatically when the Pi powers on:
 ```bash
@@ -244,6 +289,7 @@ The address on `wlan0` is your WiFi IP.
 rpi/
 ├── detection_v2.py       # main detection loop
 ├── udp_comm.py           # UDP communication with ESP32
+├── tuning.py             # optional interactive tuning UI (web-based)
 └── model/
     ├── deploy.prototxt           # MobileNet SSD network definition
     └── mobilenet_iter_73000.caffemodel   # pretrained weights

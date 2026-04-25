@@ -23,7 +23,7 @@ import threading
 # ---------------------------------------------------------------------------
 # Configuration — update ESP32_IP to match your ESP32's address on the LAN
 # ---------------------------------------------------------------------------
-ESP32_IP   = "192.168.1.100"   # <-- set this to your ESP32's IP
+ESP32_IP   = "10.254.250.50"   # <-- set this to your ESP32's IP
 ESP32_PORT = 5005              # must match the port in your ESP32 firmware
 LISTEN_PORT = 5006             # port this Pi listens on for acks / commands
 SEND_TIMEOUT = 0.5             # seconds to wait for an ack
