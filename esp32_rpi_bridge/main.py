@@ -1,20 +1,19 @@
 """
-main.py — ESP32 Feather V2: RPi UDP receiver → ESP-NOW mesh bridge.
+main.py — ESP32 Feather V2 camera bridge node.
 
 Boot sequence:
-  1. Connect to WiFi (for UDP from RPi)
-  2. Init ESP-NOW mesh layer (camera_mesh.py)
-  3. Run two concurrent async tasks:
-       udp_loop     — receives RPi events, forwards person detections to mesh
-       timeout_loop — triggers PERSON_CLEARED alert when person gone > N seconds
+  1. Connect to WiFi AP (needed for UDP from RPi)
+  2. smart_esp_comm.boot() — loads identity/peers, starts ESP-NOW on same channel
+  3. Two async tasks:
+       udp_loop     — receives person events from RPi, forwards to mesh
+       timeout_loop — fires PERSON_CLEARED when person gone > 8s
 
-Motion and clear events from the RPi are intentionally ignored here;
-the mesh clear is driven by the timeout in camera_mesh.py, not the RPi signal.
-
-Files required on the board:
-    main.py         (this file)
+Files required on board:
+    main.py
     camera_mesh.py
-    message.py      (copy from node_a_micropython/)
+    smart_esp_comm.py    (copy from ESP-Now_Comm_Packet/)
+    config.json          (this node's name/hop/id)
+    peer_file.json       (built during provisioning via serial commands)
 """
 
 import network
@@ -22,15 +21,15 @@ import socket
 import json
 import time
 import uasyncio as asyncio
-from camera_mesh import CameraMesh
+import smart_esp_comm as sh
+import camera_mesh
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-WIFI_SSID     = "Johanan "
-WIFI_PASSWORD = "tortoise123"
-
-LISTEN_PORT   = 5005   # must match ESP32_PORT in rpi/udp_comm.py
+WIFI_SSID     = ""
+WIFI_PASSWORD = ""
+LISTEN_PORT   = 5005
 # ---------------------------------------------------------------------------
 
 
@@ -45,13 +44,12 @@ def connect_wifi(timeout_s=15):
     deadline = time.time() + timeout_s
     while not sta.isconnected():
         if time.time() > deadline:
-            raise RuntimeError("[WiFi] Connection timed out")
+            raise RuntimeError("[WiFi] Timed out")
         time.sleep(0.5)
     print("[WiFi] Connected —", sta.ifconfig()[0])
 
 
-async def udp_loop(sock, mesh):
-    """Receive UDP packets from RPi and route person detections to mesh."""
+async def udp_loop(sock):
     while True:
         try:
             data, addr = sock.recvfrom(256)
@@ -60,34 +58,31 @@ async def udp_loop(sock, mesh):
 
             if event == "person":
                 conf = msg.get("confidence", 0.0)
-                print("[UDP] Person (%.2f) → mesh" % conf)
-                mesh.on_person(conf)
+                camera_mesh.on_person(conf)
                 ack = json.dumps({"ack": "ok", "event": "person"}).encode()
                 sock.sendto(ack, addr)
 
-            elif event in ("motion", "clear"):
-                pass   # motion not used; clear handled by camera_mesh timeout
+            # motion and clear ignored — mesh clear driven by camera_mesh timeout
 
         except OSError:
-            pass   # non-blocking recv with no data
+            pass
         except ValueError:
             print("[UDP] Bad JSON, ignoring")
 
         await asyncio.sleep_ms(50)
 
 
-async def timeout_loop(mesh):
-    """Periodically check whether the person-present timeout has expired."""
+async def timeout_loop():
     while True:
-        mesh.check_timeout()
+        camera_mesh.check_timeout()
         await asyncio.sleep_ms(1000)
 
 
 async def main():
+    # WiFi must come before sh.boot() so ESP-NOW adopts the AP's channel
     connect_wifi()
 
-    mesh = CameraMesh()
-    mesh.init()   # ESP-NOW init — must come after WiFi connect
+    sh.boot()   # loads config.json + peer_file.json, starts ESP-NOW, registers recv CB
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", LISTEN_PORT))
@@ -95,8 +90,8 @@ async def main():
     print("[UDP] Listening on port", LISTEN_PORT)
 
     await asyncio.gather(
-        udp_loop(sock, mesh),
-        timeout_loop(mesh),
+        udp_loop(sock),
+        timeout_loop(),
     )
 
 

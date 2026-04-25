@@ -23,7 +23,7 @@ import threading
 # ---------------------------------------------------------------------------
 # Configuration — update ESP32_IP to match your ESP32's address on the LAN
 # ---------------------------------------------------------------------------
-ESP32_IP   = "192.168.1.100"   # <-- set this to your ESP32's IP
+ESP32_IP   = "10.254.250.50"   # <-- set this to your ESP32's IP
 ESP32_PORT = 5005              # must match the port in your ESP32 firmware
 LISTEN_PORT = 5006             # port this Pi listens on for acks / commands
 SEND_TIMEOUT = 0.5             # seconds to wait for an ack
@@ -109,3 +109,21 @@ class UDPComm:
             # os.system("sudo reboot") — uncomment to act on it
         elif cmd == "status":
             self._send({"event": "status", "ts": int(time.time())})
+
+
+if __name__ == "__main__":
+    # Quick link test — run this directly on the Pi to verify UDP reach the ESP32.
+    # python3 udp_comm.py
+    comm = UDPComm()
+    try:
+        for event_fn, label in [
+            (comm.send_motion,          "motion"),
+            (lambda: comm.send_person(0.91), "person"),
+            (comm.send_clear,           "clear"),
+        ]:
+            event_fn()
+            time.sleep(1)   # give the ESP32 time to ack before next send
+        print("[TEST] Done — watch ESP32 serial output for the events.")
+        time.sleep(2)       # stay alive long enough to receive any late acks
+    finally:
+        comm.close()
