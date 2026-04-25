@@ -68,7 +68,7 @@ class SensorHAL:
         
         # SGP41 conditioning
         try:
-            self.i2c.writeto(SGP41_ADDR, )
+            self.sgp41_conditioning()
         except OSError:
             print('[SENSOR] SGP41 not detected')
 
@@ -150,7 +150,7 @@ class SensorHAL:
         rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
         self._sgp41_write_command(SGP41_CMD_MEASURE_RAW_SIGNALS, [rh_ticks, t_ticks])
         time.sleep_ms(SGP41_DELAY_MS)
-        results = self._read_words(2)
+        results = self._sgp41_read_words(2)
         return results[0], results[1]
     
     def sgp41_set_temp_humidity(self, humidity, temp):
@@ -159,9 +159,9 @@ class SensorHAL:
 
     def sgp41_conditioning(self):
         rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
-        self._write_command(SGP41_CMD_EXECUTE_CONDITIONING, [rh_ticks, t_ticks])
+        self._sgp41_write_command(SGP41_CMD_EXECUTE_CONDITIONING, [rh_ticks, t_ticks])
         time.sleep_ms(SGP41_DELAY_MS)
-        return self._read_words(1)[0]
+        return self._sgp41_read_words(1)[0]
         
     def sgp41_heater_off(self) -> None:
         self._sgp41_write_command(SGP41_CMD_TURN_HEATER_OFF)
@@ -174,7 +174,8 @@ class SensorHAL:
         return int(humidity * 65535.0 / 100.0 + 0.5), int((temperature + 45.0) * 65535.0 / 175.0 + 0.5)
 
     def _sgp41_write_command(self, command: bytearray, data = None) -> None:
-        buffer = command.copy()
+        buffer = bytearray()
+        buffer.extend(command)
         if data:
             for word in data:
                 buffer.append((word >> 8) & 0xFF)
