@@ -1,3 +1,5 @@
-Node 0  | Host      | 00:4B:12:BE:27:28
-Node 1  | Light_1   | B8:F8:62:D5:D3:88
-Node 2  | Unknown   | B8:F8:62:D5:44:04
+Node 0  | Host          | 00:4B:12:BE:27:28 | hop:0  id:1
+Node 1  | Light_1       | B8:F8:62:D5:D3:88 | hop:1  id:5   (NOTE: config.json on board says id:1 — conflict, needs fix)
+Node 2  | Unknown       | B8:F8:62:D5:44:04 |
+Node 10 | camera_bridge | 00:4B:12:BD:58:C0 | hop:1  id:10
+Node 11 | leak_sensor   | (MAC unknown)     | hop:1  id:11
