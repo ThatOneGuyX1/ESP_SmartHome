@@ -1,5 +1,6 @@
 from machine import Pin, I2C
 from time import sleep_ms
+# Values go _down_ as concentrations of VOCs and NOx increase
 
 # Adapted from https://github.com/adafruit/Adafruit_CircuitPython_SGP41/blob/main/adafruit_sgp41.py
 
@@ -17,7 +18,7 @@ _SGP41_CMD_MEASURE_RAW_SIGNALS = 0x2619
 _SGP41_CMD_EXECUTE_SELF_TEST = 0x280E
 _SGP41_CMD_TURN_HEATER_OFF = 0x3615
 _SGP41_CMD_GET_SERIAL_NUMBER = 0x3682
-_SGP41_CMD_SOFT_RESET = 0x0006
+_SGP41_CMD_SOFT_RESET = 0x06
 
 _SGP41_CONDITIONING_DELAY_MS = 50  # 50ms
 _SGP41_MEASUREMENT_DELAY_MS = 50  # 50ms
@@ -164,10 +165,12 @@ class SGP41:
         """
         Perform a soft reset.
         """
-        buffer = bytearray(2)
-        buffer[0] = (_SGP41_CMD_SOFT_RESET >> 8) & 0xFF
-        buffer[1] = _SGP41_CMD_SOFT_RESET & 0xFF
-        self.i2c.writeto(_SGP41_GENERAL_CALL_ADDR, buffer)
+        buffer = bytearray(1)
+        buffer[0] = _SGP41_CMD_SOFT_RESET & 0xFF
+        try:
+            self.i2c.writeto(_SGP41_GENERAL_CALL_ADDR, buffer)
+        except Exception as e:
+            print(f'Error when resetting: {e}')
 
         sleep_ms(20)  # 20ms delay for device to recover
 
