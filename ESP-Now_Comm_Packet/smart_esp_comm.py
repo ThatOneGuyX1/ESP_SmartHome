@@ -674,10 +674,14 @@ def handle_report_home(pkt: dict):
 
     if LOCAL_HOP == 0:
         health = decode_health(raw) if pkt.get("flags", 0) & FLAG_HEALTH else {}
+        try:
+            msg_str = message.decode("utf-8").rstrip("\x00")
+        except UnicodeError:
+            msg_str = ''.join('%02x' % b for b in message)
         output = {
             "type":      "sensor_report",
             "sender":    sender,
-            "message":   message.decode("utf-8", errors="replace").rstrip("\x00"),
+            "message":   msg_str,
             "trail":     trail,
             "health":    health,
             "timestamp": None
@@ -793,3 +797,4 @@ def boot():
     load_peers()                            # 3. network map + re-register neighbors
     espnow_set_recv_callback(on_receive)    # 4. start listening
     print("[BOOT] Node ready.")
+
