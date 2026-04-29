@@ -15,6 +15,7 @@ additional application-level hook (_app_recv_hook) that intercepts
 ACT_REQ_ACTION packets so the main loop can respond to gateway commands.
 """
 import machine
+from machine import SoftI2C, Pin
 import uasyncio as asyncio
 
 import config
@@ -46,12 +47,7 @@ comm.boot()
 # Single shared I2C bus for DHT20 (0x38) and BH1750 (0x23).
 # MAX17048 fuel gauge also sits on this bus (0x36).
 #
-i2c = machine.I2C(
-    0,
-    sda=machine.Pin(config.I2C_SDA_PIN),
-    scl=machine.Pin(config.I2C_SCL_PIN),
-    freq=config.I2C_FREQ,
-)
+i2c = SoftI2C(Pin(8), Pin(9))
 
 hal        = SensorHAL(i2c=i2c)
 fuel_gauge = MAX17048(i2c)
