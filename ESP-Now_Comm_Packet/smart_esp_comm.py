@@ -102,6 +102,9 @@ def espnow_setup():
     
     sta = network.WLAN(network.WLAN.IF_STA)
     sta.active(True)
+
+    sta.disconnect()
+    sta.config(channel=6)
     mac_local = sta.config('mac')
 
     e = espnow.ESPNow()
@@ -569,8 +572,16 @@ def parse_packet(pkt: bytes) -> dict:
 def espnow_send(peer_mac: bytes, packet: bytes):
     """Send a packet to a peer MAC. Peer must already be registered."""
     e = get_espnow()
+
+    print("Sending lenght: ", len(packet))
+    print("Type: ", type(packet))
+
+    if len(packet) > 250:
+        print("[ERROR] Packet too large: ", len(packet))
+        return
+
     try:
-        e.send(peer_mac, packet)
+        e.send(peer_mac, bytes(packet))
     except OSError as err:
         print(f"[ESP-NOW] Send failed to {format_mac(peer_mac)}: {err}")
 
@@ -663,10 +674,14 @@ def handle_report_home(pkt: dict):
 
     if LOCAL_HOP == 0:
         health = decode_health(raw) if pkt.get("flags", 0) & FLAG_HEALTH else {}
+        try:
+            msg_str = message.decode("utf-8").rstrip("\x00")
+        except UnicodeError:
+            msg_str = ''.join('%02x' % b for b in message)
         output = {
             "type":      "sensor_report",
             "sender":    sender,
-            "message":   message.decode("utf-8", errors="replace").rstrip("\x00"),
+            "message":   msg_str,
             "trail":     trail,
             "health":    health,
             "timestamp": None
@@ -782,3 +797,4 @@ def boot():
     load_peers()                            # 3. network map + re-register neighbors
     espnow_set_recv_callback(on_receive)    # 4. start listening
     print("[BOOT] Node ready.")
+
