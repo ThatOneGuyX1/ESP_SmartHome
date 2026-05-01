@@ -1,0 +1,23 @@
+{
+    "host_port": "COM3",
+    "nodes": [
+        {
+            "name": "kitchen",
+            "mac": "AA:BB:CC:DD:EE:FF",
+            "hop": 2,
+            "id": 4,
+            "neighbors": "host,living_room",
+            "node_port": "COM5",
+            "flash": true
+        },
+        {
+            "name": "garage",
+            "mac": "CC:DD:EE:FF:00:11",
+            "hop": 1,
+            "id": 6,
+            "neighbors": "host",
+            "node_port": null,
+            "flash": false
+        }
+    ]
+}
