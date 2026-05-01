@@ -4,6 +4,7 @@ import network
 import espnow
 import json
 import time
+import urandom
 
 # =======================
 # NEOPIXEL SETUP
@@ -17,21 +18,46 @@ def set_led(r, g, b):
     np[0] = (r, g, b)
     np.write()
 
-# =======================    
-
+# =======================
+# GLOBALS
+# =======================
 PEER_FILE = "peer_file.json"
-PEER_DICT = {}
 
 espnow_instance = None
 mac_local = None
 
 recv_queue = []
-SEEN_PACKETS = set()
+
+SEEN_PACKETS = {}
+NEIGHBORS = {}
+ROUTE_TABLE = {}
+
+HOST_MAC = b'\x34\xB4\x72\x70\x26\x74'
+
+BROADCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
+
+# =========================
+# ACTION TYPES
+# =========================
+ACT_HELLO = 0x01
+ACT_PING = 0x02
+ACT_ROUTE = 0x20
+ACT_FORWARD = 0x30
+ACT_STRONGEST = 0xD1
 
 # =========================
 # PACKET CREATION
 # =========================
-def create_msg_packet(dest, send, message, health, path=None, ttl=5, act=0xC0):
+def create_msg_packet(
+    dest,
+    send,
+    message,
+    health,
+    path=None,
+    ttl=5,
+    act=0xC0
+):
+
     msg_bytes = message.encode()
 
     if len(msg_bytes) > 180:
@@ -44,15 +70,20 @@ def create_msg_packet(dest, send, message, health, path=None, ttl=5, act=0xC0):
 
     packet += dest
     packet += send
+
     packet += bytes([act])
     packet += bytes([health.get("bat", 0)])
 
     timestamp = time.ticks_ms() & 0xFFFFFFFF
     packet += timestamp.to_bytes(4, 'big')
 
+    packet_id = urandom.getrandbits(16)
+    packet += packet_id.to_bytes(2, 'big')
+
     packet += bytes([ttl])
 
     packet += bytes([len(path)])
+
     for node in path:
         packet += node
 
@@ -61,26 +92,30 @@ def create_msg_packet(dest, send, message, health, path=None, ttl=5, act=0xC0):
 
     return packet
 
-
 # =========================
 # PACKET PARSING
 # =========================
 def parse_msg_packet(packet: bytes):
+
     try:
         dest = bytes(packet[0:6])
         sender = bytes(packet[6:12])
-        
+
         act = packet[12]
         battery = packet[13]
 
         timestamp = int.from_bytes(packet[14:18], 'big')
 
-        ttl = packet[18]
+        packet_id = int.from_bytes(packet[18:20], 'big')
 
-        path_len = packet[19]
-        idx = 20
+        ttl = packet[20]
+
+        path_len = packet[21]
+
+        idx = 22
 
         path = []
+
         for _ in range(path_len):
             path.append(bytes(packet[idx:idx+6]))
             idx += 6
@@ -96,6 +131,7 @@ def parse_msg_packet(packet: bytes):
             "action": act,
             "battery": battery,
             "timestamp": timestamp,
+            "packet_id": packet_id,
             "ttl": ttl,
             "path": path,
             "message": msg
@@ -105,16 +141,19 @@ def parse_msg_packet(packet: bytes):
         print("[PARSE ERROR]", e)
         return None
 
-
 # =========================
 # ESP-NOW SETUP
 # =========================
 def espnow_setup():
-    global espnow_instance, mac_local
+
+    global espnow_instance
+    global mac_local
 
     sta = network.WLAN(network.WLAN.IF_STA)
+
     sta.active(True)
     sta.disconnect()
+
     sta.config(channel=6)
 
     mac_local = sta.config('mac')
@@ -122,113 +161,155 @@ def espnow_setup():
     e = espnow.ESPNow()
     e.active(True)
 
-    BROADCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
     e.add_peer(BROADCAST_MAC)
 
     espnow_instance = e
-    print(f"[ESP-NOW] Ready. Local MAC: {format_mac(mac_local)}")
-    return espnow_instance
 
+    print(f"[ESP-NOW] MAC: {format_mac(mac_local)}")
+
+    return espnow_instance
 
 def get_espnow():
-    if espnow_instance is None:
-        raise RuntimeError("ESP-NOW not initialized.")
     return espnow_instance
 
-
 def get_local_mac():
-    if mac_local is None:
-        raise RuntimeError("ESP-NOW not initialized.")
     return mac_local
-
 
 # =========================
 # SEND / RECEIVE
 # =========================
-def espnow_send(peer_mac: bytes, packet: bytes):
-    e = get_espnow()
+def espnow_send(peer_mac, packet):
 
-    if len(packet) > 250:
-        print("[ERROR] Packet too large")
-        return
+    e = get_espnow()
 
     try:
-        e.send(peer_mac, bytes(packet))
+        e.send(peer_mac, packet)
+
     except OSError as err:
-        print(f"[ESP-NOW] Send failed: {err}")
+        print("[SEND FAIL]", err)
 
+def espnow_add_peer(mac):
 
-def espnow_add_peer(mac: bytes):
     e = get_espnow()
+
     try:
         e.add_peer(mac)
-    except OSError:
+
+    except:
         pass
 
-
 def espnow_set_recv_callback():
+
     e = get_espnow()
 
     def _internal_callback(_):
+
         result = e.irecv(0)
+
         if result:
             recv_queue.append(result)
 
     e.irq(_internal_callback)
 
-
 def get_next_packet():
+
     if recv_queue:
         return recv_queue.pop(0)
-    return None
 
+    return None
 
 # =========================
 # ROUTING
 # =========================
-def choose_best_peer():
-    e = get_espnow()
+def update_route(destination, next_hop, cost):
 
-    best_peer = None
-    best_score = -9999
+    ROUTE_TABLE[destination] = {
+        "next_hop": next_hop,
+        "cost": cost,
+        "last_seen": time.ticks_ms()
+    }
 
-    for peer in e.peers_table:
-        rssi = e.peers_table[peer][0]
+def get_best_route(destination):
 
-        rssi_score = (rssi + 100)
-        score = rssi_score
+    if destination in ROUTE_TABLE:
+        return ROUTE_TABLE[destination]
 
-        if score > best_score:
-            best_score = score
-            best_peer = peer
+    return None
 
-    return best_peer
+# =========================
+# DUPLICATE PROTECTION
+# =========================
+def packet_seen(sender, packet_id):
 
-def get_best_rssi_peer():
-    e = get_espnow()
+    key = (sender, packet_id)
 
-    best_peer = None
-    best_rssi = -999
+    if key in SEEN_PACKETS:
+        return True
 
-    for peer in e.peers_table:
-        try:
-            rssi = e.peers_table[peer][0]
+    SEEN_PACKETS[key] = time.ticks_ms()
 
-            # Ignore broadcast MAC
-            if peer == b'\xff\xff\xff\xff\xff\xff':
-                continue
-            
-            if rssi > best_rssi:
-                best_rssi = rssi
-                best_peer = peer
+    return False
 
-        except:
-            pass
+def cleanup_seen_packets():
 
-    return best_peer, best_rssi
+    now = time.ticks_ms()
+
+    remove = []
+
+    for key, ts in SEEN_PACKETS.items():
+
+        if time.ticks_diff(now, ts) > 30000:
+            remove.append(key)
+
+    for key in remove:
+        del SEEN_PACKETS[key]
 
 # =========================
 # UTIL
 # =========================
-def format_mac(mac: bytes) -> str:
+def format_mac(mac: bytes):
+
     return ':'.join(f'{b:02X}' for b in mac)
+
+
+# =======================
+# LED COLORS
+# =======================
+
+CURRENT_LED = None
+
+
+def _set_state(color_tuple):
+    global CURRENT_LED
+
+    if CURRENT_LED != color_tuple:
+        CURRENT_LED = color_tuple
+        set_led(*color_tuple)
+
+
+def led_booting():
+    _set_state((0, 0, 255))
+
+
+def led_direct_host():
+    _set_state((0, 255, 0))
+
+
+def led_relay_route():
+    _set_state((0, 255, 255))
+
+
+def led_searching():
+    _set_state((255, 255, 0))
+
+
+def led_forwarding():
+    set_led(180, 0, 255)
+
+
+def led_weak():
+    _set_state((255, 0, 0))
+
+
+def led_disconnected():
+    _set_state((0, 0, 0))
