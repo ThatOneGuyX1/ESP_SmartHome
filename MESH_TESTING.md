@@ -1,5 +1,6 @@
 # Mesh Network Testing Guide
 
+
 End-to-end guide for bringing up the ESP-NOW mesh network and verifying that
 nodes can route messages to the host.  Individual node setup (flashing,
 calibration, RPi config) is covered in each node's own README — this document
@@ -18,7 +19,7 @@ The **only** node that connects to WiFi is the **camera_bridge**, because it
 receives UDP packets from the Raspberry Pi over the local network.
 
 The host outputs received mesh data over **USB serial** to the PC — the same
-cable used by Thonny. No network connection on the host is needed.
+USB cable used for programming. No network connection on the host is needed.
 
 ```
 RPi ──UDP (WiFi)──► camera_bridge ──┐
@@ -39,14 +40,121 @@ RPi ──UDP (WiFi)──► camera_bridge ──┐
  hop:1 id:5  hop:1 id:2   hop:1 id:10    hop:1 id:11
 ```
 
-All sensor nodes are one hop from the host.  Every node routes toward the host
+All sensor nodes are one hop from the host. Every node routes toward the host
 using `ACT_REPORT_HOME` packets via `smart_esp_comm.py`.
 
 ---
 
-## Files Required on Each Board
+## Serial Tools
 
-Upload via Thonny → View → Files → right-click file → Upload to /
+### Thonny (single board)
+
+Thonny only allows one window at a time — use it when working with a single
+board in isolation.
+
+| Action | How |
+|---|---|
+| Stop running script / open REPL | Red stop button or **Ctrl+C** |
+| Upload files | View → Files → right-click → Upload to / |
+| Paste into REPL | **Ctrl+V** |
+| Soft reset | **Ctrl+D** at `>>>` prompt |
+
+### MobaXterm (multiple boards)
+
+MobaXterm supports multiple serial sessions in separate tabs — recommended
+when testing two or more boards at the same time.
+
+**Setup:** Session → Serial → select COM port → Speed: **115200** → OK.
+Repeat in a new tab for each board.
+
+| Action | How |
+|---|---|
+| Stop running script / open REPL | **Ctrl+C** |
+| Paste single line into REPL | **Right-click** |
+| Paste multi-line block | **Ctrl+E** → paste → **Ctrl+D** |
+| Soft reset | **Ctrl+D** at `>>>` prompt |
+| Hard reset | Press the physical reset button on the board |
+
+> **Deep sleep:** Ctrl+C cannot wake a sleeping board. Press the physical
+> reset button, then quickly Ctrl+C to catch it before `main.py` runs.
+
+### Uploading Files with mpremote (MobaXterm users)
+
+MobaXterm is a terminal only — use **mpremote** from a separate PowerShell or
+cmd window to upload files:
+
+```
+pip install mpremote
+```
+
+Upload files to a board (replace COM5 with your port):
+```
+mpremote connect COM5 cp main.py smart_esp_comm.py config.json peer_file.json :
+```
+
+The `:` means root of the board filesystem. mpremote releases the port after
+each command so other MobaXterm tabs stay connected.
+
+```
+mpremote connect COM5 ls       # list files on board
+mpremote connect COM5 reset    # hard reset
+```
+
+### Get a Board's MAC Address
+
+At the `>>>` prompt (Ctrl+C first to stop any running script), paste:
+
+```python
+import network; mac = network.WLAN(network.STA_IF).config('mac'); print(':'.join('%02x' % b for b in mac))
+```
+
+Paste with right-click in MobaXterm, Ctrl+V in Thonny.
+
+---
+
+## Quick Setup (Recommended)
+
+Instead of manually editing peer files and uploading board by board, use the
+setup script. It generates all peer files, injects WiFi credentials, AP channel,
+and RPi IP from a single config file, then uploads everything automatically.
+
+**Step 1** — Edit `network_config.json` at the repo root:
+```json
+{
+  "wifi":    { "ssid": "YourNetwork", "password": "YourPassword" },
+  "channel": 11,
+  "rpi":     { "esp32_ip": "10.254.250.x" },
+  "nodes": {
+    "host":          { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM7", "hop": 0, "id": 1 },
+    "camera_bridge": { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM5", "hop": 1, "id": 10 },
+    "leak_sensor":   { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM5", "hop": 1, "id": 11 }
+  }
+}
+```
+
+**Step 2** — Run from the repo root:
+```
+python setup.py
+```
+
+The script will generate peer files, inject all settings, and ask if you want
+to upload to boards. Answer `y` and it handles everything.
+
+> To find a board's MAC: connect it, Ctrl+C for REPL, paste:
+> ```python
+> import network; mac = network.WLAN(network.STA_IF).config('mac'); print(':'.join('%02x' % b for b in mac))
+> ```
+> To find AP channel: boot camera_bridge, Ctrl+C for REPL, paste:
+> ```python
+> import network; print(network.WLAN(network.STA_IF).config('channel'))
+> ```
+
+The manual steps below are only needed if you're configuring a single node
+or troubleshooting.
+
+---
+
+## Files Required on Each Board
 
 | Board | Files to upload |
 |---|---|
@@ -96,18 +204,13 @@ node that will send it packets:
 }
 ```
 
-> **Finding a node's MAC:** Connect the board in Thonny and run:
-> ```python
-> import network; print(network.WLAN(network.STA_IF).config('mac').hex(':'))
-> ```
-> Or just read it from the esptool output when you flashed the board.
-
 ---
 
 ## Step 2 — Boot the Host
 
-Connect the host ESP32 in Thonny. For a simple receive-and-print listener,
-upload this as `main.py` on the host:
+Connect the host ESP32 via USB. Open a serial session (Thonny or MobaXterm on
+the host's COM port at 115200). Upload this as `main.py` on the host then
+hard-reset:
 
 ```python
 import smart_esp_comm as sh
@@ -133,8 +236,8 @@ If peer count is wrong, check that `peer_file.json` was uploaded correctly.
 
 ## Step 3 — Boot a Sensor Node
 
-Connect the sensor node (e.g. camera_bridge) in Thonny and hard-reset it.
-Expected output:
+Connect the sensor node via USB, open a second serial session on its COM port,
+and hard-reset it. Expected output:
 
 ```
 [WiFi] Connected — 10.254.250.x          ← camera_bridge only
@@ -152,17 +255,17 @@ line.
 
 ## Step 4 — Trigger a Test Packet from REPL
 
-With the sensor node connected in Thonny, open the REPL (Ctrl+C to stop, then
-use the shell at the bottom). This tests the full routing path without needing
-the RPi or a real leak event.
+Hit Ctrl+C on the sensor node to stop `main.py` and open the REPL. This tests
+the full routing path without needing the RPi or a real sensor event.
 
-**Camera bridge:**
+**Camera bridge** — paste into REPL:
 ```python
 import camera_mesh
 camera_mesh.on_person(0.9)
 ```
 
-**Leak sensor:**
+**Leak sensor** — paste into REPL (use Ctrl+E / Ctrl+D in MobaXterm for
+multi-line):
 ```python
 import smart_esp_comm as sh
 sh.espnow_setup(); sh.load_config(); sh.load_peers()
@@ -184,8 +287,8 @@ If this JSON line appears on the host, end-to-end routing is working.
 
 ## Step 5 — Add a Node via Serial Commands (Alternative to editing peer_file.json)
 
-Instead of editing peer_file.json manually, you can provision peers live using
-the host's serial interface from Thonny's REPL:
+Instead of editing `peer_file.json` manually, provision peers live by typing
+directly into the host's REPL:
 
 ```
 ADD camera_bridge 00:4B:12:BD:58:C0 1 10 host
@@ -211,15 +314,37 @@ SYNC
 | `[WARN] Packet from unknown MAC — rejected` | Host received a packet from a node not in its peer_file | Add the node to host's peer_file.json and re-upload |
 | Camera bridge drops WiFi after boot | `sh.boot()` was called (disconnects WiFi) | camera_bridge/main.py already works around this — make sure you uploaded the latest version |
 | `[SYNC] WARNING: sync packet is NNNb, exceeds 250B` | Too many peers in the map for one ESP-NOW packet | Remove unused peers with `REMOVE <name>` |
-| Host prints nothing on receive | Wrong channel — camera_bridge WiFi AP and mesh nodes on different channels | All pure ESP-NOW nodes default to channel 6 via `espnow_setup()`; camera_bridge adopts the AP's channel — AP must also be on ch6 |
+| Host prints nothing on receive | Channel mismatch — host and camera_bridge on different channels | See Channel Note below |
 
 ---
 
 ## Channel Note
 
-ESP-NOW and WiFi share the same radio. All nodes that use `espnow_setup()`
-directly (host, leak_sensor, room_detect, light_1) default to **channel 6**.
-The camera_bridge connects to WiFi first and adopts the AP's channel — so
-**your WiFi router/AP must be on channel 6** for camera_bridge to reach the
-rest of the mesh.  Check your router settings if camera_bridge packets never
-arrive at the host.
+ESP-NOW and WiFi share the same radio. The camera_bridge connects to WiFi
+first and ESP-NOW adopts the AP's channel. All other nodes (host, leak_sensor,
+etc.) default to **channel 6** via `espnow_setup()`.
+
+If your WiFi AP is NOT on channel 6 (common — most routers use ch1, 6, or 11),
+the host and camera_bridge will be on different channels and can't communicate.
+
+**Fix — check your AP channel first:**
+
+On the camera_bridge, after boot, run in REPL:
+```python
+import network; print(network.WLAN(network.STA_IF).config('channel'))
+```
+
+Then update `Nodes/host/main.py` to match. After `sh.espnow_setup()` add:
+```python
+import network
+_sta = network.WLAN(network.STA_IF)
+_sta.config(channel=11)  # replace 11 with your AP's channel
+print("[HOST] Channel:", _sta.config('channel'))
+```
+
+Upload to the host and verify the channel prints correctly on boot.
+
+> Pure ESP-NOW nodes (leak_sensor, room_detect) use channel 6 by default.
+> If your AP is on a different channel, update `sta.config(channel=N)` in
+> `espnow_setup()` inside `smart_esp_comm.py` to match, then re-upload
+> `smart_esp_comm.py` to all boards.

@@ -21,13 +21,12 @@ Hardware:
 """
 
 import machine
-import time
 import smart_esp_comm as sh
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-POLL_INTERVAL_S = 5      # seconds between dry checks
+POLL_INTERVAL_S = 60     # seconds between dry checks
 ALERT_HOLDOFF_S = 30     # seconds between repeated alerts on sustained leak
 LEAK_THRESHOLD  = 1000   # ADC 0-4095 — run leak_sensor.py first to calibrate
 # ---------------------------------------------------------------------------
