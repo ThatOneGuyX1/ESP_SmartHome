@@ -41,6 +41,12 @@ class SensorHAL:
 
     def init(self):
         """Initialize I2C bus if not provided, check DHT20 calibration, power on BH1750."""
+        # Feather ESP32 V2: GPIO2 gates power to the STEMMA QT port.
+        # Must be driven HIGH before I2C devices will respond.
+        stemma_pwr = machine.Pin(2, machine.Pin.OUT)
+        stemma_pwr.value(1)
+        time.sleep_ms(10)
+
         if self.i2c is None:
             self.i2c = machine.I2C(
                 0,
