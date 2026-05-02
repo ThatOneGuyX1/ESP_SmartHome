@@ -35,8 +35,8 @@ from textual            import on
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
-AVAILABLE_SENSORS    = ["temperature", "humidity", "motion", "pressure"]
-DEFAULT_PORT         = "COM4"
+AVAILABLE_SENSORS    = ["temperature", "humidity", "motion", "pressure", "leak", "camera"]
+DEFAULT_PORT         = "COM7"
 DEFAULT_BAUDRATE     = 115200
 DEFAULT_LOG_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 DEFAULT_LOG_FILENAME = "smarthome_log.csv"
@@ -44,12 +44,14 @@ DEFAULT_LOG_FILENAME = "smarthome_log.csv"
 STALE_THRESHOLD = 15    # seconds with no packet before a node is marked stale
 MAX_HISTORY     = 14    # number of sparkline data points kept per node
 SPARK_CHARS     = "▁▂▃▄▅▆▇█"
+LEAK_THRESHOLD  = 1000  # ADC 0-4095 — must match leak_sensor/main.py
 
 ROW_COLORS = {
-    "sensor_data": "white",
-    "health":      "cyan",
-    "alert":       "bold red",
-    "discovery":   "green",
+    "sensor_data":   "white",
+    "sensor_report": "white",
+    "health":        "cyan",
+    "alert":         "bold red",
+    "discovery":     "green",
 }
 
 
@@ -213,6 +215,8 @@ class NodeCard(Static):
             "uptime":    "—",
             "last_seen": "—",
             "alert":     "",
+            "leak":      "—",
+            "person":    "—",
         }
         self._temp_history: list[float] = []
         self._hum_history:  list[float] = []
@@ -264,6 +268,27 @@ class NodeCard(Static):
         elif msg_type == "alert":
             s["alert"] = msg
 
+        elif msg_type == "sensor_report":
+            if msg.startswith("LEAK:"):
+                try:
+                    raw = int(msg.split(":")[1])
+                    if raw >= LEAK_THRESHOLD:
+                        s["leak"]  = f"DETECTED (ADC:{raw})"
+                        s["alert"] = f"LEAK DETECTED (ADC:{raw})"
+                    else:
+                        s["leak"]  = f"DRY (ADC:{raw})"
+                        s["alert"] = ""
+                except (ValueError, IndexError):
+                    pass
+            elif msg.startswith("CAM:PERSON:"):
+                try:
+                    conf = int(msg.split(":")[2])
+                    s["person"] = f"PERSON ({conf}%)"
+                except (ValueError, IndexError):
+                    s["person"] = "PERSON"
+            elif msg == "CAM:CLEAR":
+                s["person"] = "CLEAR"
+
         # Clear stale status on any incoming packet
         self._last_seen_dt = datetime.now()
         if self._is_stale:
@@ -294,6 +319,22 @@ class NodeCard(Static):
         alert_line = f"\n[bold red]⚠  {s['alert']}[/bold red]" if s["alert"] else ""
         t_spark = self._sparkline(self._temp_history)
         h_spark = self._sparkline(self._hum_history)
+        leak_val = s["leak"]
+        if "DETECTED" in leak_val:
+            leak_disp = f"[bold red]{leak_val}[/bold red]"
+        elif "DRY" in leak_val:
+            leak_disp = f"[green]{leak_val}[/green]"
+        else:
+            leak_disp = leak_val
+
+        person_val = s["person"]
+        if "PERSON" in person_val:
+            person_disp = f"[yellow]{person_val}[/yellow]"
+        elif person_val == "CLEAR":
+            person_disp = f"[green]{person_val}[/green]"
+        else:
+            person_disp = person_val
+
         return (
             f"[bold cyan]{self.mac}[/bold cyan]  {status}\n"
             f"[dim]{s['node_type']}[/dim]\n"
@@ -302,6 +343,8 @@ class NodeCard(Static):
             f"[yellow]Humidity:[/yellow]  {s['humidity']:8}  [dim]{h_spark}[/dim]\n"
             f"[yellow]Light:[/yellow]     {s['light']}\n"
             f"[yellow]Motion:[/yellow]    {s['occupancy']}\n"
+            f"[yellow]Leak:[/yellow]      {leak_disp}\n"
+            f"[yellow]Camera:[/yellow]    {person_disp}\n"
             f"{'─' * 38}\n"
             f"[dim]Battery: {s['battery']}   Uptime: {s['uptime']}[/dim]\n"
             f"[dim]Last seen: {s['last_seen']}[/dim]"
@@ -393,8 +436,18 @@ class SerialTUI(App):
     is_connected = reactive(False)
     is_paused    = reactive(False)
 
-    def __init__(self):
+    DEMO_PACKETS = [
+        {"type": "sensor_report", "sender": "00:4B:12:BD:58:C0", "message": "LEAK:3100",           "trail": [11], "health": {}},
+        {"type": "sensor_report", "sender": "00:4B:12:BD:58:C0", "message": "CAM:PERSON:87",        "trail": [10], "health": {}},
+        {"type": "sensor_report", "sender": "00:4B:12:BD:58:C0", "message": "CAM:CLEAR",            "trail": [10], "health": {}},
+        {"type": "sensor_report", "sender": "00:4B:12:BD:58:C0", "message": "LEAK:200",             "trail": [11], "health": {}},
+        {"type": "sensor_data",   "sender": "B8:F8:62:D5:44:04", "message": "T:22.5C H:48% PIR:1", "trail": [2],  "health": {"battery": 87, "uptime": 3600}},
+        {"type": "sensor_data",   "sender": "B8:F8:62:D5:44:04", "message": "T:23.1C H:46% PIR:0", "trail": [2],  "health": {"battery": 86, "uptime": 3660}},
+    ]
+
+    def __init__(self, demo: bool = False):
         super().__init__()
+        self._demo          = demo
         self.reader         = SerialReader()
         self.logger         = DataLogger()
         self.active_sensors = set(AVAILABLE_SENSORS)
@@ -533,6 +586,11 @@ class SerialTUI(App):
         self._update_status()
         self.set_interval(5, self._check_stale_nodes)
         self.notify(f"Logging to: {self.logger.log_path}", timeout=6)
+        if self._demo:
+            self.is_connected = True
+            self._start_poll()
+            self.run_worker(self._inject_demo_packets(), exclusive=False)
+            self.notify("Demo mode active — fake packets incoming", timeout=5)
 
     # ── Button handlers ───────────────────────────────────────────────────────
 
@@ -651,6 +709,13 @@ class SerialTUI(App):
                     battery  = f"{health.get('battery', '--')}%"
                     uptime   = f"{health.get('uptime',  '--')}s"
 
+                    # ── Sensor filter (Sensors tab checkboxes) ──────────────
+                    if msg_type == "sensor_report":
+                        if message.startswith("LEAK:") and "leak" not in self.active_sensors:
+                            continue
+                        if message.startswith("CAM:") and "camera" not in self.active_sensors:
+                            continue
+
                     # ── Update dashboard card ────────────────────────────────
                     await self._update_node_card(sender, msg_type, entry)
 
@@ -667,7 +732,15 @@ class SerialTUI(App):
                     )
 
                     # ── Alerts tab ───────────────────────────────────────────
-                    if msg_type == "alert":
+                    is_alert = msg_type == "alert"
+                    if msg_type == "sensor_report" and message.startswith("LEAK:"):
+                        try:
+                            if int(message.split(":")[1]) >= LEAK_THRESHOLD:
+                                is_alert = True
+                        except (ValueError, IndexError):
+                            pass
+
+                    if is_alert:
                         alerts_table.add_row(
                             f"[bold red]{ts}[/]",
                             f"[bold red]{sender}[/]",
@@ -716,6 +789,13 @@ class SerialTUI(App):
         """Called every 5 s; marks node cards stale if silent too long."""
         for card in self._node_cards.values():
             card.check_stale()
+
+    async def _inject_demo_packets(self):
+        await asyncio.sleep(1.5)
+        for pkt in self.DEMO_PACKETS:
+            pkt["timestamp"] = datetime.now().strftime("%H:%M:%S")
+            self.reader.data_queue.put_nowait(dict(pkt))
+            await asyncio.sleep(2)
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -767,4 +847,5 @@ class SerialTUI(App):
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    SerialTUI().run()
+    import sys
+    SerialTUI("--demo" in sys.argv).run()
