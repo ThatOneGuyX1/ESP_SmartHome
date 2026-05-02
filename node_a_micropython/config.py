@@ -41,6 +41,10 @@ HEALTH_REPORT_INTERVAL_MS = 120_000
 TEMP_HIGH_THRESHOLD = 3500   # 35.00 C
 TEMP_LOW_THRESHOLD  = 500    #  5.00 C
 
+# Air quality thresholds (raw values 0-65535)
+VOC_THRESHOLD = 35000
+NOX_THRESHOLD = 18000
+
 # Mode selection
 NODE_ALWAYS_ON = True   # False = deep-sleep mode
 
