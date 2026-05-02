@@ -5,7 +5,11 @@ import json
 # =========================
 # SETUP
 # =========================
-last_forward_flash = 0
+
+FORWARD_SEEN = {}
+FORWARD_TIMEOUT = 5000
+
+last_forward_event = 0
 FORWARD_FLASH_MS = 150
 
 espnow_setup()
@@ -25,9 +29,42 @@ host_cost = 1
 
 ROUTE_TIMEOUT = 10000
 
+
+# =========================
+# FORWARD DEDUP KEY
+# =========================
+
+def forward_key(data):
+    return (data["packet_id"], data["sender"])
+
+
+def forward_seen(key):
+    now = time.ticks_ms()
+
+    if key in FORWARD_SEEN:
+        return True
+
+    FORWARD_SEEN[key] = now
+    return False
+
+
+def cleanup_forward_seen():
+    now = time.ticks_ms()
+
+    remove = []
+
+    for key, ts in FORWARD_SEEN.items():
+        if time.ticks_diff(now, ts) > FORWARD_TIMEOUT:
+            remove.append(key)
+
+    for key in remove:
+        del FORWARD_SEEN[key]
+
+
 # =========================
 # SEND HELLO
 # =========================
+
 def send_hello():
 
     packet = create_msg_packet(
@@ -40,9 +77,11 @@ def send_hello():
 
     espnow_send(BROADCAST_MAC, packet)
 
+
 # =========================
 # ROUTE ADVERTISEMENT
 # =========================
+
 def send_route_advertisement():
 
     payload = json.dumps({
@@ -59,22 +98,21 @@ def send_route_advertisement():
 
     espnow_send(BROADCAST_MAC, packet)
 
+
 # =========================
-# FORWARD PACKET
+# FORWARD PACKET (FIXED)
 # =========================
+
 def forward_packet(data):
 
-    global last_host_seen, last_forward_flash
+    global last_host_seen, last_forward_event
 
     if data["ttl"] <= 1:
-
-        print("[NODE B] TTL expired")
         return
 
+    # prevent loops via path history
     if get_local_mac() in data["path"]:
         return
-
-    # led_forwarding()
 
     print(f"""
 [FORWARDING]
@@ -94,14 +132,14 @@ TO HOST: {format_mac(HOST_MAC)}
 
     espnow_send(HOST_MAC, new_packet)
 
-    # time.sleep_ms(150)
-
-    last_forward_flash = time.ticks_ms()
+    last_forward_event = time.ticks_ms()
     last_host_seen = time.ticks_ms()
+
 
 # =========================
 # PROCESS PACKETS
 # =========================
+
 def process_packet(mac, msg):
 
     global last_host_seen
@@ -111,13 +149,16 @@ def process_packet(mac, msg):
     if not data:
         return
 
+    # global duplicate suppression
     if packet_seen(data["sender"], data["packet_id"]):
         return
 
     sender = data["sender"]
 
-    espnow_add_peer(sender)
+    if sender != get_local_mac():
+        espnow_add_peer(sender)
 
+    # host heartbeat
     if sender == HOST_MAC:
 
         update_route(
@@ -130,17 +171,29 @@ def process_packet(mac, msg):
 
         print("[NODE B] Direct host route")
 
+    # =========================
+    # RELAY FILTER (STRICT FIX)
+    # =========================
+
     if (
-        data["destination"] == HOST_MAC
+        data["action"] == ACT_PING
+        and data["destination"] == HOST_MAC
         and data["sender"] != get_local_mac()
-        and data["action"] == ACT_PING
+        and get_local_mac() not in data["path"]
     ):
 
+        key = forward_key(data)
+
+        if forward_seen(key):
+            return
+
         forward_packet(data)
+
 
 # =========================
 # MAIN LOOP
 # =========================
+
 while True:
 
     now = time.ticks_ms()
@@ -154,19 +207,28 @@ while True:
         if msg:
             process_packet(mac, msg)
 
+    # =========================
+    # LED STATE MACHINE
+    # =========================
+
     age = time.ticks_diff(now, last_host_seen)
-
-
-    flash_age = time.ticks_diff(now, last_forward_flash)
+    flash_age = time.ticks_diff(now, last_forward_event)
 
     if flash_age < FORWARD_FLASH_MS:
+
         led_forwarding()
 
     elif age < ROUTE_TIMEOUT:
+
         led_direct_host()
 
     else:
+
         led_searching()
+
+    # =========================
+    # PERIODIC TASKS
+    # =========================
 
     if time.ticks_diff(now, last_hello) > 2000:
 
@@ -179,5 +241,6 @@ while True:
         last_route_adv = now
 
     cleanup_seen_packets()
+    cleanup_forward_seen()
 
     time.sleep_ms(50)

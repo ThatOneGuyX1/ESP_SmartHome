@@ -25,6 +25,7 @@ last_host_seen = 0
 host_cost = 999
 
 ROUTE_TIMEOUT = 10000
+PREFER_RELAY = True
 
 # =========================
 # SEND HELLO
@@ -79,6 +80,24 @@ def send_ping():
 
     print("[NODE A] Routed through Node B")
 
+
+def relay_route_alive():
+
+    route = get_best_route(HOST_MAC)
+
+    if not route:
+        return False
+
+    if route["next_hop"] != NODE_B_MAC:
+        return False
+
+    age = time.ticks_diff(
+        time.ticks_ms(),
+        route["last_seen"]
+    )
+
+    return age < ROUTE_TIMEOUT
+
 # =========================
 # PROCESS PACKETS
 # =========================
@@ -100,25 +119,9 @@ def process_packet(mac, msg):
     espnow_add_peer(sender)
 
     # =========================
-    # DIRECT HOST ROUTE
-    # =========================
-    # if sender == HOST_MAC:
-
-    #     update_route(
-    #         HOST_MAC,
-    #         HOST_MAC,
-    #         1
-    #     )
-
-    #     host_cost = 1
-    #     last_host_seen = time.ticks_ms()
-
-    #     print("[NODE A] Direct route to host")
-
-    # =========================
     # RELAY ROUTE VIA NODE B
     # =========================
-    elif sender == NODE_B_MAC and data["action"] == ACT_ROUTE:
+    if sender == NODE_B_MAC and data["action"] == ACT_ROUTE:
 
         try:
             payload = json.loads(data["message"])
@@ -137,8 +140,31 @@ def process_packet(mac, msg):
 
             print("[NODE A] Relay route active via Node B")
 
+            return
+
         except:
-            pass        
+            return  
+
+    # =========================
+    # DIRECT HOST ROUTE
+    # =========================
+    elif sender == HOST_MAC:
+
+        # ignore direct host ONLY if relay is still alive
+        if PREFER_RELAY and relay_route_alive():
+            return
+
+        update_route(
+            HOST_MAC,
+            HOST_MAC,
+            1
+        )
+
+        host_cost = 1
+
+        last_host_seen = time.ticks_ms()
+
+        print("[NODE A] Direct route to host")     
 
 # =========================
 # MAIN LOOP
