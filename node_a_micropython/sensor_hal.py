@@ -68,7 +68,7 @@ class SensorHAL:
         
         # SGP41 conditioning
         try:
-            self.sgp41_conditioning()
+            self._sgp41_conditioning()
         except OSError:
             print('[SENSOR] SGP41 not detected')
 
@@ -146,26 +146,26 @@ class SensorHAL:
             print('[SENSOR] BH1750 read error:', e)
             return 0
         
-    def sgp41_measure_raw(self):
-        rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
-        self._sgp41_write_command(SGP41_CMD_MEASURE_RAW_SIGNALS, [rh_ticks, t_ticks])
-        time.sleep_ms(SGP41_DELAY_MS)
-        results = self._sgp41_read_words(2)
-        return results[0], results[1]
+    def _sgp41_read(self):
+        try:
+            rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
+            self._sgp41_write_command(SGP41_CMD_MEASURE_RAW_SIGNALS, [rh_ticks, t_ticks])
+            time.sleep_ms(SGP41_DELAY_MS)
+            results = self._sgp41_read_words(2)
+            return 65535 - results[0], results[1]
+        except OSError as e:
+            print('[SENSOR] SGP41 read error:', e)
+            return 0, 0
     
-    def sgp41_set_temp_humidity(self, humidity, temp):
+    def _sgp41_set_temp_humidity(self, humidity, temp):
         self._humidity =  max(0.0, min(100.0, humidity))
         self._temp = max(-45.0, min(130.0, temp))
 
-    def sgp41_conditioning(self):
+    def _sgp41_conditioning(self):
         rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
         self._sgp41_write_command(SGP41_CMD_EXECUTE_CONDITIONING, [rh_ticks, t_ticks])
         time.sleep_ms(SGP41_DELAY_MS)
         return self._sgp41_read_words(1)[0]
-        
-    def sgp41_heater_off(self) -> None:
-        self._sgp41_write_command(SGP41_CMD_TURN_HEATER_OFF)
-        time.sleep_ms(1)
 
     @staticmethod
     def _sgp41_humidity_temperature_to_ticks(humidity: float, temperature: float):
@@ -221,7 +221,8 @@ class SensorHAL:
         """Read all environmental sensors → (temp_c100, humidity_c100, light_lux)."""
         temp, humidity = self._dht20_read()
         light = self._bh1750_read()
-        return temp, humidity, light
+        voc, nox = self._sgp41_read()
+        return temp, humidity, light, voc, nox
 
     def get_occupancy(self):
         """Poll PIR GPIO directly → 0=vacant, 1=occupied."""
