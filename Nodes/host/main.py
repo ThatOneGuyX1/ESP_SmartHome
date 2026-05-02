@@ -1,6 +1,12 @@
 import smart_esp_comm as sh
 
 sh.espnow_setup()
+
+# Force channel to match WiFi AP (camera_bridge uses AP channel, not ch6)
+import network
+_sta = network.WLAN(network.STA_IF)
+_sta.config(channel=11)
+print("[HOST] Channel:", _sta.config('channel'))
 sh.load_config()
 sh.load_peers()
 

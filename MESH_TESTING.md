@@ -112,6 +112,48 @@ Paste with right-click in MobaXterm, Ctrl+V in Thonny.
 
 ---
 
+## Quick Setup (Recommended)
+
+Instead of manually editing peer files and uploading board by board, use the
+setup script. It generates all peer files, injects WiFi credentials, AP channel,
+and RPi IP from a single config file, then uploads everything automatically.
+
+**Step 1** — Edit `network_config.json` at the repo root:
+```json
+{
+  "wifi":    { "ssid": "YourNetwork", "password": "YourPassword" },
+  "channel": 11,
+  "rpi":     { "esp32_ip": "10.254.250.x" },
+  "nodes": {
+    "host":          { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM7", "hop": 0, "id": 1 },
+    "camera_bridge": { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM5", "hop": 1, "id": 10 },
+    "leak_sensor":   { "mac": "XX:XX:XX:XX:XX:XX", "com": "COM5", "hop": 1, "id": 11 }
+  }
+}
+```
+
+**Step 2** — Run from the repo root:
+```
+python setup.py
+```
+
+The script will generate peer files, inject all settings, and ask if you want
+to upload to boards. Answer `y` and it handles everything.
+
+> To find a board's MAC: connect it, Ctrl+C for REPL, paste:
+> ```python
+> import network; mac = network.WLAN(network.STA_IF).config('mac'); print(':'.join('%02x' % b for b in mac))
+> ```
+> To find AP channel: boot camera_bridge, Ctrl+C for REPL, paste:
+> ```python
+> import network; print(network.WLAN(network.STA_IF).config('channel'))
+> ```
+
+The manual steps below are only needed if you're configuring a single node
+or troubleshooting.
+
+---
+
 ## Files Required on Each Board
 
 | Board | Files to upload |
@@ -272,15 +314,37 @@ SYNC
 | `[WARN] Packet from unknown MAC — rejected` | Host received a packet from a node not in its peer_file | Add the node to host's peer_file.json and re-upload |
 | Camera bridge drops WiFi after boot | `sh.boot()` was called (disconnects WiFi) | camera_bridge/main.py already works around this — make sure you uploaded the latest version |
 | `[SYNC] WARNING: sync packet is NNNb, exceeds 250B` | Too many peers in the map for one ESP-NOW packet | Remove unused peers with `REMOVE <name>` |
-| Host prints nothing on receive | Wrong channel — camera_bridge WiFi AP and mesh nodes on different channels | All pure ESP-NOW nodes default to channel 6; camera_bridge adopts the AP's channel — AP must also be on ch6 |
+| Host prints nothing on receive | Channel mismatch — host and camera_bridge on different channels | See Channel Note below |
 
 ---
 
 ## Channel Note
 
-ESP-NOW and WiFi share the same radio. All nodes that use `espnow_setup()`
-directly (host, leak_sensor, room_detect, light_1) default to **channel 6**.
-The camera_bridge connects to WiFi first and adopts the AP's channel — so
-**your WiFi router/AP must be on channel 6** for camera_bridge to reach the
-rest of the mesh. Check your router settings if camera_bridge packets never
-arrive at the host.
+ESP-NOW and WiFi share the same radio. The camera_bridge connects to WiFi
+first and ESP-NOW adopts the AP's channel. All other nodes (host, leak_sensor,
+etc.) default to **channel 6** via `espnow_setup()`.
+
+If your WiFi AP is NOT on channel 6 (common — most routers use ch1, 6, or 11),
+the host and camera_bridge will be on different channels and can't communicate.
+
+**Fix — check your AP channel first:**
+
+On the camera_bridge, after boot, run in REPL:
+```python
+import network; print(network.WLAN(network.STA_IF).config('channel'))
+```
+
+Then update `Nodes/host/main.py` to match. After `sh.espnow_setup()` add:
+```python
+import network
+_sta = network.WLAN(network.STA_IF)
+_sta.config(channel=11)  # replace 11 with your AP's channel
+print("[HOST] Channel:", _sta.config('channel'))
+```
+
+Upload to the host and verify the channel prints correctly on boot.
+
+> Pure ESP-NOW nodes (leak_sensor, room_detect) use channel 6 by default.
+> If your AP is on a different channel, update `sta.config(channel=N)` in
+> `espnow_setup()` inside `smart_esp_comm.py` to match, then re-upload
+> `smart_esp_comm.py` to all boards.

@@ -1,0 +1,30 @@
+{
+  "wifi": {
+    "ssid": "",
+    "password": ""
+  },
+  "channel": 11,
+  "rpi": {
+    "esp32_ip": "10.254.250.50"
+  },
+  "nodes": {
+    "host": {
+      "mac": "00:4B:12:BD:57:84",
+      "com": "COM7",
+      "hop": 0,
+      "id": 1
+    },
+    "camera_bridge": {
+      "mac": "00:4B:12:BD:58:C0",
+      "com": "COM5",
+      "hop": 1,
+      "id": 10
+    },
+    "leak_sensor": {
+      "mac": "00:4B:12:BD:58:C0",
+      "com": "COM5",
+      "hop": 1,
+      "id": 11
+    }
+  }
+}

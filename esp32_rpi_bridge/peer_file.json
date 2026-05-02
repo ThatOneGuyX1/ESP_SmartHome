@@ -1,7 +1,7 @@
 {
   "peers": {
     "host": {
-      "mac": "00:4B:12:BE:27:28",
+      "mac": "00:4B:12:BD:57:84",
       "neighbors": ["camera_bridge"],
       "hop": 0,
       "id": 1
