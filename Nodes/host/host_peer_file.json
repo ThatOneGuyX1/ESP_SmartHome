@@ -1,0 +1,22 @@
+{
+  "peers": {
+    "room_detect": {
+      "mac": "B8:F8:62:D5:44:04",
+      "neighbors": ["host"],
+      "hop": 1,
+      "id": 2
+    },
+    "leak_sensor": {
+        "mac": "B8:F8:62:D5:CC:A4",
+        "neighbors": ["host"],
+        "hop": 1,
+        "id": 11
+    },
+        "light_1": {
+        "mac": "B8:F8:62:D5:D3:88",
+        "neighbors": ["host"],
+        "hop": 1,
+        "id": 5
+    }
+  }
+}
