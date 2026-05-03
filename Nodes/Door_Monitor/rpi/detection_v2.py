@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import subprocess
 import os
-from udp_comm import UDPComm
+from Nodes.Door_Monitor.rpi.udp_comm import UDPComm
 
 # --- CONFIG ---
 WIDTH, HEIGHT = 320, 240

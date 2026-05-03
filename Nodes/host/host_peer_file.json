@@ -17,6 +17,14 @@
         "neighbors": ["host"],
         "hop": 1,
         "id": 5
+    },
+     "air_quality_1": {
+      "mac": "B8:F8:62:D5:44:04",
+      "neighbors": [
+        "host"
+      ],
+      "hop": 1,
+      "id": 2
     }
   }
 }

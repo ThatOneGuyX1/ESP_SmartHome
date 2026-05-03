@@ -5,7 +5,7 @@ Mirrors sensor_hal_real.c — I2C drivers for DHT20, BH1750, PIR GPIO.
 import machine
 import time
 
-import config
+import Archived_FILES.node_a_micropython.config as config
 
 # I2C addresses
 DHT20_ADDR  = 0x38

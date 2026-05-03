@@ -4,8 +4,8 @@ Mirrors sensor_task.c from the C firmware.
 Supports both always-on (async loop) and deep-sleep (one-shot) modes.
 """
 import time
-import config
-import message
+import Archived_FILES.node_a_micropython.config as config
+import Archived_FILES.node_a_micropython.message as message
 
 # ── Dynamic thresholds (settable at runtime via commands) ──────────────
 temp_high_threshold = config.TEMP_HIGH_THRESHOLD

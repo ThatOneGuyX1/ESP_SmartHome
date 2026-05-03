@@ -1,7 +1,8 @@
 Node 0  | Host          | 00:4B:12:BE:27:28 | hop:0  id:1
 Node 1  | Light_1       | B8:F8:62:D5:D3:88 | hop:1  id:5   (NOTE: config.json on board says id:1 — conflict, needs fix)
-Node 2  | room_detect   | B8:F8:62:D5:44:04 | hop:1  id:2   (alex_sense node)
-Node 10 | camera_bridge | 00:4B:12:BD:58:C0 | hop:1  id:10
-Node 11 | leak_sensor   | 00:4B:12:BD:58:C0 | hop:1  id:11  (same board as camera_bridge during testing)
+Node 2  | Air Quality   | B8:F8:62:D5:44:04 | hop:1  id:2   (alex_sense node)
+
+Node 10 | camera_bridge |  | hop:1  id:10
+
 Node 21 | leak_sensor ID| 00:4B:12:BD:58:C0 | hop:1  id:21
 
