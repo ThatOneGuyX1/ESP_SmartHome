@@ -115,9 +115,9 @@ def upload_all(cfg):
 
     print("\n[UPLOAD] Host →", nodes["host"]["com"])
     mpremote_upload(nodes["host"]["com"],
-        ("Nodes/host/main.py",              ":main.py"),
-        ("Nodes/host/config.json",           ":config.json"),
-        ("Nodes/host/peer_file.json",        ":peer_file.json"),
+        ("Nodes/host/main.py",                   ":main.py"),
+        ("Nodes/host/host_config.json",           ":config.json"),
+        ("Nodes/host/host_peer_file.json",        ":peer_file.json"),
         ("ESP-Now_Comm_Packet/smart_esp_comm.py", ":smart_esp_comm.py"),
     )
 
@@ -145,7 +145,7 @@ def main():
     nodes = cfg["nodes"]
 
     print("\n[STEP 1] Generating peer files...")
-    write_peer_file("Nodes/host/peer_file.json",
+    write_peer_file("Nodes/host/host_peer_file.json",
                     generate_peer_file("host", nodes))
     write_peer_file("esp32_rpi_bridge/peer_file.json",
                     generate_peer_file("camera_bridge", nodes))
