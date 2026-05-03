@@ -119,6 +119,8 @@ def espnow_setup():
     return e
 
 
+
+
 def get_espnow():
     """Return active ESPNow instance. Raises if espnow_setup() not called."""
     if espnow_instance is None:
@@ -572,16 +574,8 @@ def parse_packet(pkt: bytes) -> dict:
 def espnow_send(peer_mac: bytes, packet: bytes):
     """Send a packet to a peer MAC. Peer must already be registered."""
     e = get_espnow()
-
-    print("Sending lenght: ", len(packet))
-    print("Type: ", type(packet))
-
-    if len(packet) > 250:
-        print("[ERROR] Packet too large: ", len(packet))
-        return
-
     try:
-        e.send(peer_mac, bytes(packet))
+        e.send(peer_mac, packet)
     except OSError as err:
         print(f"[ESP-NOW] Send failed to {format_mac(peer_mac)}: {err}")
 
@@ -591,8 +585,10 @@ def espnow_send(peer_mac: bytes, packet: bytes):
 def on_receive(e):
     """Receive callback. Called by ESP-NOW IRQ with the ESPNow object."""
     mac, raw = e.irecv(0)
+    print("[RAW RX] From: %s  len: %d" % (format_mac(mac), len(raw) if raw else 0))  # ← add this
     if mac is None:
         return
+    
 
     sender_name = _name_for_mac(mac)
     if sender_name is None:
@@ -797,4 +793,3 @@ def boot():
     load_peers()                            # 3. network map + re-register neighbors
     espnow_set_recv_callback(on_receive)    # 4. start listening
     print("[BOOT] Node ready.")
-
