@@ -1,7 +1,17 @@
 # Raspberry Pi Node — Setup Guide
 
-Camera-based motion and person detection node for the ESP SmartHome mesh.  
-Runs `detection_v2.py` and communicates with the ESP32 gateway over UDP.
+Camera-based person detection node for the ESP SmartHome mesh.  
+Runs `detection_v2.py` and sends confirmed person detections over UDP to the
+ESP32 Feather V2 bridge node, which forwards them onto the ESP-NOW mesh.
+
+```
+Raspberry Pi  ──UDP/WiFi──►  ESP32 Feather V2  ──ESP-NOW──►  Mesh / Host
+(this device)                (bridge node)
+```
+
+> The ESP32 bridge is required — the Pi cannot speak ESP-NOW directly.
+> Motion events are detected locally but not forwarded; only AI-confirmed
+> person detections are sent.
 
 ---
 
@@ -131,7 +141,7 @@ python3 -c "import cv2; print(cv2.__version__)"
 
 ## 6. Configure UDP Communication
 
-Open `udp_comm.py` and set the ESP32's IP address:
+Open `udp_comm.py` and set the ESP32 bridge node's IP address:
 ```bash
 nano udp_comm.py
 ```
@@ -143,12 +153,17 @@ ESP32_IP = "192.168.x.x"   # replace with your ESP32 Feather V2's actual IP
 
 > The ESP32's IP is printed to its serial monitor on boot: `[WiFi] Connected — IP: x.x.x.x`
 
+The Pi sends to the ESP32 on **port 5005** and listens for ACKs on **port 5006**.
+The ESP32 receives person events and forwards them onto the ESP-NOW mesh as
+`ACT_REPORT_HOME` packets routed toward the host node.
+
 ---
 
 ## 7. Test the UDP Link
 
 With the ESP32 running its firmware, test the link from the Pi:
 ```bash
+python3 -m venv env
 source env/bin/activate   # if using venv
 python3 udp_comm.py
 ```
@@ -167,19 +182,66 @@ python3 detection_v2.py
 Expected output:
 ```
 Loading AI model from .../model/mobilenet_iter_73000.caffemodel...
-[UDP] Comm ready — sending to 192.168.x.x:5005, listening on :6006
+[UDP] Comm ready — sending to 192.168.x.x:5005, listening on :5006
 System Live: Monitoring...
 Status: Scanning...
-[UDP] Sent: {'event': 'motion', ...}
 !!! PERSON DETECTED (0.87)
 [UDP] Sent: {'event': 'person', 'confidence': 0.87, ...}
+[UDP] Received from (...): {'ack': 'ok', 'event': 'person'}
 ```
+
+Motion events are detected locally as a gate for the AI model but are not
+sent to the ESP32. Only confirmed person detections are forwarded.
 
 Stop with `Ctrl+C`.
 
 ---
 
-## 9. (Optional) Run on Boot
+## 9. (Optional) Interactive Detection Tuner
+
+If you are getting false positives or missed detections, use the live tuning
+UI to adjust parameters while watching the annotated camera feed in your browser.
+
+Install Flask into the venv:
+```bash
+source env/bin/activate
+pip install flask
+```
+
+Run the tuner:
+```bash
+python3 tuning.py
+```
+
+Open in your browser on any device on the same network:
+```
+http://<pi-ip>:8000
+```
+
+The UI shows the live camera feed with overlays and three sliders:
+
+| Slider | Default | Effect |
+|---|---|---|
+| Confidence threshold | 0.50 | Raise to reduce AI false positives |
+| Min motion area (px²) | 2500 | Raise to ignore small pixel noise |
+| Motion pixel threshold | 35 | Raise to ignore subtle lighting changes |
+
+Yellow contours show motion areas. Red boxes are person detections. Green boxes
+are other detected objects. The MOTION and PERSON badges update every 500ms.
+
+Once you find values that eliminate false positives, copy them into
+`detection_v2.py` at the top of the file:
+```python
+MIN_AREA       = 5000   # example tuned value
+THRESHOLD_VAL  = 50
+CONF_THRESHOLD = 0.70
+```
+
+Stop the tuner with `Ctrl+C`.
+
+---
+
+## 10. (Optional) Run on Boot
 
 To start detection automatically when the Pi powers on:
 ```bash
@@ -227,6 +289,7 @@ The address on `wlan0` is your WiFi IP.
 rpi/
 ├── detection_v2.py       # main detection loop
 ├── udp_comm.py           # UDP communication with ESP32
+├── tuning.py             # optional interactive tuning UI (web-based)
 └── model/
     ├── deploy.prototxt           # MobileNet SSD network definition
     └── mobilenet_iter_73000.caffemodel   # pretrained weights
