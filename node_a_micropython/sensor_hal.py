@@ -10,6 +10,7 @@ import config
 # I2C addresses
 DHT20_ADDR  = 0x38
 BH1750_ADDR = 0x23
+SGP41_ADDR = 0x59
 
 # DHT20 commands
 DHT20_CMD_TRIGGER = bytes([0xAC, 0x33, 0x00])
@@ -20,6 +21,11 @@ BH1750_CMD_POWER_ON = bytes([0x01])
 BH1750_CMD_HRES_1X  = bytes([0x20])
 BH1750_MEAS_DELAY   = 180  # ms
 
+# SGP41 commands
+SGP41_CMD_EXECUTE_CONDITIONING = bytes([0x26, 0x12])
+SGP41_CMD_MEASURE_RAW_SIGNALS = bytes([0x26, 0x19])
+SGP41_CMD_TURN_HEATER_OFF = bytes([0x36, 0x15])
+SGP41_DELAY_MS = 50  # 50ms
 
 class SensorHAL:
     def __init__(self, i2c=None, pir_pin=None):
@@ -30,9 +36,17 @@ class SensorHAL:
             machine.Pin.PULL_DOWN
         )
         self._occupancy = 0
+        self._temp = 25
+        self._humidity = 50
 
     def init(self):
         """Initialize I2C bus if not provided, check DHT20 calibration, power on BH1750."""
+        # Feather ESP32 V2: GPIO2 gates power to the STEMMA QT port.
+        # Must be driven HIGH before I2C devices will respond.
+        stemma_pwr = machine.Pin(2, machine.Pin.OUT)
+        stemma_pwr.value(1)
+        time.sleep_ms(10)
+
         if self.i2c is None:
             self.i2c = machine.I2C(
                 0,
@@ -57,6 +71,12 @@ class SensorHAL:
             print('[SENSOR] BH1750 ready at 0x%02X' % BH1750_ADDR)
         except OSError:
             print('[SENSOR] BH1750 not detected')
+        
+        # SGP41 conditioning
+        try:
+            self._sgp41_conditioning()
+        except OSError:
+            print('[SENSOR] SGP41 not detected')
 
         # PIR initial state
         self._occupancy = self.pir.value()
@@ -105,6 +125,9 @@ class SensorHAL:
             humidity_c100 = (raw_hum * 10000) // (1 << 20)
             temp_c100 = (raw_temp * 20000) // (1 << 20) - 5000
 
+            # Feed to air quality sensor, if available
+            self.sgp41_set_temp_humidity(humidity_c100, temp_c100)
+
             return temp_c100, humidity_c100
 
         except OSError as e:
@@ -128,12 +151,84 @@ class SensorHAL:
         except OSError as e:
             print('[SENSOR] BH1750 read error:', e)
             return 0
+        
+    def _sgp41_read(self):
+        try:
+            rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
+            self._sgp41_write_command(SGP41_CMD_MEASURE_RAW_SIGNALS, [rh_ticks, t_ticks])
+            time.sleep_ms(SGP41_DELAY_MS)
+            results = self._sgp41_read_words(2)
+            return 65535 - results[0], results[1]
+        except OSError as e:
+            print('[SENSOR] SGP41 read error:', e)
+            return 0, 0
+    
+    def _sgp41_set_temp_humidity(self, humidity, temp):
+        self._humidity =  max(0.0, min(100.0, humidity))
+        self._temp = max(-45.0, min(130.0, temp))
+
+    def _sgp41_conditioning(self):
+        rh_ticks, t_ticks = self._sgp41_humidity_temperature_to_ticks(self._humidity, self._temp)
+        self._sgp41_write_command(SGP41_CMD_EXECUTE_CONDITIONING, [rh_ticks, t_ticks])
+        time.sleep_ms(SGP41_DELAY_MS)
+        return self._sgp41_read_words(1)[0]
+
+    @staticmethod
+    def _sgp41_humidity_temperature_to_ticks(humidity: float, temperature: float):
+        humidity = max(0.0, min(100.0, humidity))
+        temperature = max(-45.0, min(130.0, temperature))
+        return int(humidity * 65535.0 / 100.0 + 0.5), int((temperature + 45.0) * 65535.0 / 175.0 + 0.5)
+
+    def _sgp41_write_command(self, command: bytearray, data = None) -> None:
+        buffer = bytearray()
+        buffer.extend(command)
+        if data:
+            for word in data:
+                buffer.append((word >> 8) & 0xFF)
+                buffer.append(word & 0xFF)
+                buffer.append(self._crc8(word))
+        self.i2c.writeto(SGP41_ADDR, buffer)
+
+    def _sgp41_read_words(self, num_words: int):
+        if num_words == 0:
+            return []
+
+        buffer = bytearray(num_words * 3)  # Each word is 2 bytes + 1 CRC byte
+        self.i2c.readfrom_into(SGP41_ADDR, buffer)
+        words = []
+        for i in range(num_words):
+            offset = i * 3
+            word = (buffer[offset] << 8) | buffer[offset + 1]
+            crc = buffer[offset + 2]
+
+            if self._crc8(word) != crc:
+                raise RuntimeError("CRC check failed while reading from SGP41")
+            words.append(word)
+
+        return words
+
+    @staticmethod
+    def _crc8(word: int) -> int:
+        crc = 0xFF
+        bytes_to_check = [(word >> 8) & 0xFF, word & 0xFF]
+
+        for byte in bytes_to_check:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x80:
+                    crc = (crc << 1) ^ 0x31
+                else:
+                    crc <<= 1
+                crc &= 0xFF  # Keep it 8-bit
+
+        return crc
 
     def read_env(self):
         """Read all environmental sensors → (temp_c100, humidity_c100, light_lux)."""
         temp, humidity = self._dht20_read()
         light = self._bh1750_read()
-        return temp, humidity, light
+        voc, nox = self._sgp41_read()
+        return temp, humidity, light, voc, nox
 
     def get_occupancy(self):
         """Poll PIR GPIO directly → 0=vacant, 1=occupied."""

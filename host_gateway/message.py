@@ -44,7 +44,7 @@ _HDR_FMT = '<6s6sBHBIB'
 _HDR_PACK_SIZE = 21  # struct.calcsize(_HDR_FMT)
 
 # Payload struct formats
-_SENSOR_FMT    = '<hHHBHH'     # 7 bytes
+_SENSOR_FMT    = '<hHHB'     # 7 bytes
 _HEALTH_FMT    = '<HBhbII'   # 14 bytes
 _ALERT_FMT     = '<BH'       # 3 bytes
 _DISCOVERY_FMT = '<BBB'      # 3 bytes
@@ -146,14 +146,14 @@ def validate(buf):
 
 # ── Payload pack/unpack ───────────────────────────────────────────────
 
-def pack_sensor_data(temp_c100, humidity_c100, light_lux, occupancy, voc_raw, nox_raw):
-    """Pack sensor data payload (11 bytes)."""
-    return struct.pack(_SENSOR_FMT, temp_c100, humidity_c100, light_lux, occupancy, voc_raw, nox_raw)
+def pack_sensor_data(temp_c100, humidity_c100, light_lux, occupancy):
+    """Pack sensor data payload (7 bytes)."""
+    return struct.pack(_SENSOR_FMT, temp_c100, humidity_c100, light_lux, occupancy)
 
 
 def unpack_sensor_data(payload):
-    """Unpack sensor data → (temp_c100, humidity_c100, light_lux, occupancy, voc_raw, nox_raw)."""
-    return struct.unpack(_SENSOR_FMT, payload[:11])
+    """Unpack sensor data → (temp_c100, humidity_c100, light_lux, occupancy)."""
+    return struct.unpack(_SENSOR_FMT, payload[:7])
 
 
 def pack_health(battery_mv, battery_soc, chip_temp_c100, rssi_dbm, heap_free, uptime_ms):
