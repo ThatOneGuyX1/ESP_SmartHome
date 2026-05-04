@@ -792,4 +792,3 @@ def boot():
     load_config()                           # 2. identity
     load_peers()                            # 3. network map + re-register neighbors
     espnow_set_recv_callback(on_receive)    # 4. start listening
-    print("[BOOT] Node ready.")
