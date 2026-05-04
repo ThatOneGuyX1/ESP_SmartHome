@@ -3,7 +3,7 @@ main.py — ESP32 Feather V2 camera bridge node.
 
 Boot sequence:
   1. Connect to WiFi AP (needed for UDP from RPi)
-  2. smart_esp_comm.boot() — loads identity/peers, starts ESP-NOW on same channel
+  2. Manual ESP-NOW init (without sta.disconnect) — keeps WiFi alive on AP's channel
   3. Two async tasks:
        udp_loop     — receives person events from RPi, forwards to mesh
        timeout_loop — fires PERSON_CLEARED when person gone > 8s
@@ -17,6 +17,7 @@ Files required on board:
 """
 
 import network
+import espnow as _espnow
 import socket
 import json
 import time
@@ -27,7 +28,7 @@ import camera_mesh
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-WIFI_SSID     = ""
+WIFI_SSID     = " "
 WIFI_PASSWORD = ""
 LISTEN_PORT   = 5005
 # ---------------------------------------------------------------------------
@@ -79,10 +80,27 @@ async def timeout_loop():
 
 
 async def main():
-    # WiFi must come before sh.boot() so ESP-NOW adopts the AP's channel
+    # WiFi must come first so the radio is locked to the AP's channel before
+    # ESP-NOW starts. sh.boot() calls espnow_setup() which now does
+    # sta.disconnect() + sta.config(channel=6) — that would kill WiFi — so we
+    # replicate boot() here without the disconnect step.
     connect_wifi()
 
-    sh.boot()   # loads config.json + peer_file.json, starts ESP-NOW, registers recv CB
+    e = _espnow.ESPNow()
+    try:
+        e.active(False)
+    except OSError:
+        pass
+    e.active(True)
+    sh.espnow_instance = e
+    sta = network.WLAN(network.STA_IF)
+    sh.mac_local = sta.config('mac')
+    print("[ESP-NOW] Ready. MAC:", sh.format_mac(sh.mac_local))
+
+    sh.load_config()
+    sh.load_peers()
+    sh.espnow_set_recv_callback(sh.on_receive)
+    print("[BOOT] Node ready.")
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", LISTEN_PORT))

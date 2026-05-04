@@ -1,0 +1,12 @@
+{
+  "peers": {
+    "host": {
+      "mac": "00:4B:12:BE:27:28",
+      "neighbors": [
+        "leak_sensor"
+      ],
+      "hop": 0,
+      "id": 1
+    }
+  }
+}

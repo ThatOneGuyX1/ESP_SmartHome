@@ -5,8 +5,8 @@ Mirrors health_task.c from the C firmware.
 import gc
 import time
 
-import config
-import message
+import Archived_FILES.node_a_micropython.config as config
+import Archived_FILES.node_a_micropython.message as message
 
 
 def health_send_once(mesh, fuel_gauge):

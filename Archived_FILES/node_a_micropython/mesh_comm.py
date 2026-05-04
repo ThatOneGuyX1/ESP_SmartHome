@@ -9,8 +9,8 @@ import network
 import espnow
 import time
 
-import config
-import message
+import Archived_FILES.node_a_micropython.config as config
+import Archived_FILES.node_a_micropython.message as message
 
 
 class MeshComm:

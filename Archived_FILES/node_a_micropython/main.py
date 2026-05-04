@@ -6,13 +6,13 @@ import machine
 import time
 import struct
 
-import config
-import message
-from mesh_comm import MeshComm
-from sensor_hal import SensorHAL
-from max17048 import MAX17048
-import sensor_task
-import health_task
+import Archived_FILES.node_a_micropython.config as config
+import Archived_FILES.node_a_micropython.message as message
+from Archived_FILES.node_a_micropython.mesh_comm import MeshComm
+from Archived_FILES.node_a_micropython.sensor_hal import SensorHAL
+from Archived_FILES.node_a_micropython.max17048 import MAX17048
+import Archived_FILES.node_a_micropython.sensor_task as sensor_task
+import Archived_FILES.node_a_micropython.health_task as health_task
 
 print('========================================')
 print('  Node A -- Occupancy/Temp/Light Sensor')

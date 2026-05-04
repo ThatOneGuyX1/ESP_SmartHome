@@ -102,6 +102,9 @@ def espnow_setup():
     
     sta = network.WLAN(network.WLAN.IF_STA)
     sta.active(True)
+
+    sta.disconnect()
+    sta.config(channel=6)
     mac_local = sta.config('mac')
 
     e = espnow.ESPNow()
@@ -114,6 +117,8 @@ def espnow_setup():
     espnow_instance = e
     print(f"[ESP-NOW] Ready. MAC: {format_mac(mac_local)}")
     return e
+
+
 
 
 def get_espnow():
@@ -580,8 +585,10 @@ def espnow_send(peer_mac: bytes, packet: bytes):
 def on_receive(e):
     """Receive callback. Called by ESP-NOW IRQ with the ESPNow object."""
     mac, raw = e.irecv(0)
+    print("[RAW RX] From: %s  len: %d" % (format_mac(mac), len(raw) if raw else 0))  # ← add this
     if mac is None:
         return
+    
 
     sender_name = _name_for_mac(mac)
     if sender_name is None:
@@ -663,10 +670,14 @@ def handle_report_home(pkt: dict):
 
     if LOCAL_HOP == 0:
         health = decode_health(raw) if pkt.get("flags", 0) & FLAG_HEALTH else {}
+        try:
+            msg_str = message.decode("utf-8").rstrip("\x00")
+        except UnicodeError:
+            msg_str = ''.join('%02x' % b for b in message)
         output = {
             "type":      "sensor_report",
             "sender":    sender,
-            "message":   message.decode("utf-8", errors="replace").rstrip("\x00"),
+            "message":   msg_str,
             "trail":     trail,
             "health":    health,
             "timestamp": None

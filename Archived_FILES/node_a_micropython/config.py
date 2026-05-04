@@ -34,12 +34,16 @@ I2C_FREQ     = 100_000
 PIR_GPIO_PIN = 25
 
 # Sensor task timing
-SENSOR_SAMPLE_INTERVAL_MS = 30_000
+SENSOR_SAMPLE_INTERVAL_MS = 5_000
 HEALTH_REPORT_INTERVAL_MS = 120_000
 
 # Temperature thresholds (C x 100)
 TEMP_HIGH_THRESHOLD = 3500   # 35.00 C
 TEMP_LOW_THRESHOLD  = 500    #  5.00 C
+
+# Air quality thresholds (raw values 0-65535)
+VOC_THRESHOLD = 35000
+NOX_THRESHOLD = 18000
 
 # Mode selection
 NODE_ALWAYS_ON = True   # False = deep-sleep mode
