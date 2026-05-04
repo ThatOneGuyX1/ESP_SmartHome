@@ -2,314 +2,183 @@ from machine import Pin
 import neopixel
 import network
 import espnow
-import json
 import time
+import json
 import urandom
 
-# =======================
-# NEOPIXEL SETUP
-# =======================
+# =========================
+# LED SETUP
+# =========================
+
 neo_power = Pin(20, Pin.OUT)
 neo_power.value(1)
-
 np = neopixel.NeoPixel(Pin(9), 1)
+CURRENT_LED = None
 
 def set_led(r, g, b):
     np[0] = (r, g, b)
     np.write()
 
-# =======================
+def _set_state(color):
+    global CURRENT_LED
+    if CURRENT_LED != color:
+        CURRENT_LED = color
+        set_led(*color)
+
+def led_booting():  _set_state((0, 0, 255))    # blue
+def led_direct():   _set_state((0, 255, 0))    # green
+def led_relay():    _set_state((0, 255, 255))  # cyan
+def led_forward():  _set_state((180, 0, 255))  # purple
+def led_search():   _set_state((255, 255, 0))  # yellow
+
+# =========================
 # GLOBALS
-# =======================
-PEER_FILE = "peer_file.json"
+# Update HOST_MAC to match your host board's MAC address.
+# Run on host REPL to get it:
+#   import network; w=network.WLAN(0); w.active(True); print(bytes(w.config('mac')))
+# =========================
 
-espnow_instance = None
-mac_local = None
-
-recv_queue = []
-
-SEEN_PACKETS = {}
-NEIGHBORS = {}
-ROUTE_TABLE = {}
-
-HOST_MAC = b'\x34\xB4\x72\x70\x26\x74'
-
+HOST_MAC      = b'\x58\xE6\xC5\xF5\x79\xF8'
 BROADCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
 
-# =========================
-# ACTION TYPES
-# =========================
-ACT_HELLO = 0x01
-ACT_PING = 0x02
-ACT_ROUTE = 0x20
-ACT_FORWARD = 0x30
-ACT_STRONGEST = 0xD1
-
-# =========================
-# PACKET CREATION
-# =========================
-def create_msg_packet(
-    dest,
-    send,
-    message,
-    health,
-    path=None,
-    ttl=5,
-    act=0xC0
-):
-
-    msg_bytes = message.encode()
-
-    if len(msg_bytes) > 180:
-        msg_bytes = msg_bytes[:180]
-
-    if path is None:
-        path = []
-
-    packet = bytearray()
-
-    packet += dest
-    packet += send
-
-    packet += bytes([act])
-    packet += bytes([health.get("bat", 0)])
-
-    timestamp = time.ticks_ms() & 0xFFFFFFFF
-    packet += timestamp.to_bytes(4, 'big')
-
-    packet_id = urandom.getrandbits(16)
-    packet += packet_id.to_bytes(2, 'big')
-
-    packet += bytes([ttl])
-
-    packet += bytes([len(path)])
-
-    for node in path:
-        packet += node
-
-    packet += bytes([len(msg_bytes)])
-    packet += msg_bytes
-
-    return packet
-
-# =========================
-# PACKET PARSING
-# =========================
-def parse_msg_packet(packet: bytes):
-
-    try:
-        dest = bytes(packet[0:6])
-        sender = bytes(packet[6:12])
-
-        act = packet[12]
-        battery = packet[13]
-
-        timestamp = int.from_bytes(packet[14:18], 'big')
-
-        packet_id = int.from_bytes(packet[18:20], 'big')
-
-        ttl = packet[20]
-
-        path_len = packet[21]
-
-        idx = 22
-
-        path = []
-
-        for _ in range(path_len):
-            path.append(bytes(packet[idx:idx+6]))
-            idx += 6
-
-        msg_len = packet[idx]
-        idx += 1
-
-        msg = packet[idx:idx+msg_len].decode()
-
-        return {
-            "destination": dest,
-            "sender": sender,
-            "action": act,
-            "battery": battery,
-            "timestamp": timestamp,
-            "packet_id": packet_id,
-            "ttl": ttl,
-            "path": path,
-            "message": msg
-        }
-
-    except Exception as e:
-        print("[PARSE ERROR]", e)
-        return None
-
-# =========================
-# ESP-NOW SETUP
-# =========================
-def espnow_setup():
-
-    global espnow_instance
-    global mac_local
-
-    sta = network.WLAN(network.WLAN.IF_STA)
-
-    sta.active(True)
-    sta.disconnect()
-
-    sta.config(channel=6)
-
-    mac_local = sta.config('mac')
-
-    e = espnow.ESPNow()
-    e.active(True)
-
-    e.add_peer(BROADCAST_MAC)
-
-    espnow_instance = e
-
-    print(f"[ESP-NOW] MAC: {format_mac(mac_local)}")
-
-    return espnow_instance
-
-def get_espnow():
-    return espnow_instance
-
-def get_local_mac():
-    return mac_local
-
-# =========================
-# SEND / RECEIVE
-# =========================
-def espnow_send(peer_mac, packet):
-
-    e = get_espnow()
-
-    try:
-        e.send(peer_mac, packet)
-
-    except OSError as err:
-        print("[SEND FAIL]", err)
-
-def espnow_add_peer(mac):
-
-    e = get_espnow()
-
-    try:
-        e.add_peer(mac)
-
-    except:
-        pass
-
-def espnow_set_recv_callback():
-
-    e = get_espnow()
-
-    def _internal_callback(_):
-
-        result = e.irecv(0)
-
-        if result:
-            recv_queue.append(result)
-
-    e.irq(_internal_callback)
-
-def get_next_packet():
-
-    if recv_queue:
-        return recv_queue.pop(0)
-
-    return None
-
-# =========================
-# ROUTING
-# =========================
-def update_route(destination, next_hop, cost):
-
-    ROUTE_TABLE[destination] = {
-        "next_hop": next_hop,
-        "cost": cost,
-        "last_seen": time.ticks_ms()
-    }
-
-def get_best_route(destination):
-
-    if destination in ROUTE_TABLE:
-        return ROUTE_TABLE[destination]
-
-    return None
-
-# =========================
-# DUPLICATE PROTECTION
-# =========================
-def packet_seen(sender, packet_id):
-
-    key = (sender, packet_id)
-
-    if key in SEEN_PACKETS:
-        return True
-
-    SEEN_PACKETS[key] = time.ticks_ms()
-
-    return False
-
-def cleanup_seen_packets():
-
-    now = time.ticks_ms()
-
-    remove = []
-
-    for key, ts in SEEN_PACKETS.items():
-
-        if time.ticks_diff(now, ts) > 30000:
-            remove.append(key)
-
-    for key in remove:
-        del SEEN_PACKETS[key]
+# Packet action types
+ACT_PING  = 1   # heartbeat/routing packet — carries sender temp
+ACT_ROUTE = 2   # Node B beacon — carries Node B temp
+
+esp_instance = None
+local_mac    = None
+_recv_pending = False
+recv_queue   = []
+SEEN         = {}
 
 # =========================
 # UTIL
 # =========================
-def format_mac(mac: bytes):
 
-    return ':'.join(f'{b:02X}' for b in mac)
+def format_mac(mac):
+    if mac is None:
+        return "NONE"
+    if isinstance(mac, str):
+        return mac
+    return ':'.join('{:02X}'.format(b) for b in mac)
 
+def new_pid():
+    return urandom.getrandbits(16)
 
-# =======================
-# LED COLORS
-# =======================
+# =========================
+# ESP-NOW SETUP
+# Broadcast-only architecture — no unicast peers needed except
+# BROADCAST_MAC itself.  This eliminates all peer table and
+# channel-mismatch issues that plagued the unicast approach.
+# =========================
 
-CURRENT_LED = None
+def espnow_setup():
+    global esp_instance, local_mac
 
+    sta = network.WLAN(network.WLAN.IF_STA)
+    sta.active(True)
+    sta.disconnect()
+    sta.config(channel=6)
+    local_mac = sta.config('mac')
 
-def _set_state(color_tuple):
-    global CURRENT_LED
+    e = espnow.ESPNow()
+    e.active(True)
+    e.config(rxbuf=2048)          # generous buffer — broadcast traffic is higher
+    e.add_peer(BROADCAST_MAC, channel=6)
 
-    if CURRENT_LED != color_tuple:
-        CURRENT_LED = color_tuple
-        set_led(*color_tuple)
+    esp_instance = e
+    print("[ESP] local MAC:", format_mac(local_mac))
 
+def espnow_reinit():
+    """
+    Full ESP-NOW stack reset — cycles active(False)/active(True) to
+    flush stale radio state on the C6 after sustained relay operation.
+    Broadcast sends silently fail after relay period without this reset.
+    """
+    global esp_instance
+    e = esp_instance
+    try:
+        e.irq(None)
+        e.active(False)
+    except:
+        pass
+    time.sleep_ms(100)
+    try:
+        e.active(True)
+        e.config(rxbuf=2048)
+        e.add_peer(BROADCAST_MAC, channel=6)
+        espnow_set_recv_callback()
+        print("[ESP] reinit complete")
+    except Exception as ex:
+        print("[ESP] reinit failed:", ex)
 
-def led_booting():
-    _set_state((0, 0, 255))
+def get_espnow():   return esp_instance
+def get_local_mac(): return local_mac
 
+def espnow_send_bcast(msg):
+    """Send to BROADCAST_MAC. All boards on ch6 receive it."""
+    e = get_espnow()
+    if isinstance(msg, str):
+        msg = msg.encode()
+    try:
+        e.send(BROADCAST_MAC, msg, False)  # False = non-blocking
+        return True
+    except Exception as ex:
+        print("[SEND FAIL]", ex)
+        return False
 
-def led_direct_host():
-    _set_state((0, 255, 0))
+# =========================
+# RECEIVE — IRQ sets flag, main loop drains
+# =========================
 
+def espnow_set_recv_callback():
+    e = get_espnow()
+    def cb(_):
+        global _recv_pending
+        _recv_pending = True
+    e.irq(cb)
 
-def led_relay_route():
-    _set_state((0, 255, 255))
+def drain_recv_queue():
+    global _recv_pending
+    if not _recv_pending:
+        return
+    _recv_pending = False
+    e = get_espnow()
+    while True:
+        pkt = e.irecv(0)
+        if pkt is None or pkt[0] is None:
+            break
+        recv_queue.append(pkt)
 
+def get_next_packet():
+    if recv_queue:
+        return recv_queue.pop(0)
+    return None
 
-def led_searching():
-    _set_state((255, 255, 0))
+# =========================
+# PACKETS
+# =========================
 
+def parse_packet(msg):
+    try:
+        if isinstance(msg, (bytes, bytearray)):
+            msg = msg.decode()
+        return json.loads(msg)
+    except:
+        return None
 
-def led_forwarding():
-    set_led(180, 0, 255)
+def packet_seen(sender, pid):
+    """Return True if we've already processed this sender+pid combo."""
+    key = "{}-{}".format(sender, pid)
+    if key in SEEN:
+        return True
+    SEEN[key] = time.ticks_ms()
+    return False
 
-
-def led_weak():
-    _set_state((255, 0, 0))
-
-
-def led_disconnected():
-    _set_state((0, 0, 0))
+def cleanup_seen():
+    """Remove dedup entries older than 15 seconds."""
+    now = time.ticks_ms()
+    dead = [k for k, ts in SEEN.items()
+            if time.ticks_diff(now, ts) > 15000]
+    for k in dead:
+        del SEEN[k]

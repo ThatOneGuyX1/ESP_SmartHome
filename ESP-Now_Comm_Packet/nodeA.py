@@ -1,223 +1,103 @@
 from common_esp import *
+import esp32
 import time
-import json
 
-# =========================
-# SETUP
-# =========================
-espnow_setup()
+espnow_setup()   # must be called BEFORE reading local_mac
+
+NODE_B_MAC_STR = '58:E6:C5:F6:79:E0'
+HOST_MAC_STR   = format_mac(HOST_MAC)
+LOCAL_MAC_STR  = format_mac(get_local_mac())   # safe — called after setup
+
 espnow_set_recv_callback()
 
-print("NODE A:", format_mac(get_local_mac()))
-
-NODE_B_MAC = b'\x58\xE6\xC5\xF6\x79\xE0'
-
-espnow_add_peer(NODE_B_MAC)
-espnow_add_peer(HOST_MAC)
-
+print("NODE A:", LOCAL_MAC_STR)
 led_booting()
 
-last_hello = 0
-last_route_adv = 0
-last_ping = 0
-last_host_seen = 0
+# =========================
+# STATE
+# =========================
 
-host_cost = 999
+last_ping       = 0
+PING_INTERVAL   = 2000
 
-ROUTE_TIMEOUT = 10000
-PREFER_RELAY = True
+last_relay_seen = 0
+RELAY_DEAD_MS   = 9000
+
+using_relay     = False
+
+def read_temp():
+    try:
+        return esp32.mcu_temperature()
+    except:
+        return 0
 
 # =========================
-# SEND HELLO
+# PROCESS INCOMING PACKET
 # =========================
-def send_hello():
 
-    packet = create_msg_packet(
-        dest=BROADCAST_MAC,
-        send=get_local_mac(),
-        message="HELLO",
-        health={"bat": 95},
-        act=ACT_HELLO
-    )
-
-    espnow_send(BROADCAST_MAC, packet)
-
-# =========================
-# ROUTE ADVERTISEMENT
-# =========================
-def send_route_advertisement():
-
-    payload = json.dumps({
-        "cost": host_cost
-    })
-
-    packet = create_msg_packet(
-        dest=BROADCAST_MAC,
-        send=get_local_mac(),
-        message=payload,
-        health={"bat": 95},
-        act=ACT_ROUTE
-    )
-
-    espnow_send(BROADCAST_MAC, packet)
-
-# =========================
-# SEND PING THROUGH RELAY
-# =========================
-def send_ping():
-
-    packet = create_msg_packet(
-        dest=HOST_MAC,
-        send=get_local_mac(),
-        message="PING FROM NODE A",
-        health={"bat": 95},
-        path=[get_local_mac()],
-        ttl=5,
-        act=ACT_PING
-    )
-
-    espnow_send(NODE_B_MAC, packet)
-
-    print("[NODE A] Routed through Node B")
-
-
-def relay_route_alive():
-
-    route = get_best_route(HOST_MAC)
-
-    if not route:
-        return False
-
-    if route["next_hop"] != NODE_B_MAC:
-        return False
-
-    age = time.ticks_diff(
-        time.ticks_ms(),
-        route["last_seen"]
-    )
-
-    return age < ROUTE_TIMEOUT
-
-# =========================
-# PROCESS PACKETS
-# =========================
 def process_packet(mac, msg):
+    global last_relay_seen, using_relay
 
-    global host_cost
-    global last_host_seen
-
-    data = parse_msg_packet(msg)
-
+    data = parse_packet(msg)
     if not data:
         return
 
-    if packet_seen(data["sender"], data["packet_id"]):
+    sender = data.get("sender", "")
+    pid    = data.get("pid", 0)
+
+    if sender == LOCAL_MAC_STR:
         return
 
-    sender = data["sender"]
+    if packet_seen(sender, pid):
+        return
 
-    espnow_add_peer(sender)
+    if data.get("action") == ACT_ROUTE and sender == NODE_B_MAC_STR:
+        last_relay_seen = time.ticks_ms()
+        using_relay     = True
+        print("[NODE A] relay alive")
 
-    # =========================
-    # RELAY ROUTE VIA NODE B
-    # =========================
-    if sender == NODE_B_MAC and data["action"] == ACT_ROUTE:
+# =========================
+# SEND PING
+# =========================
 
-        try:
-            payload = json.loads(data["message"])
-
-            relay_cost = payload.get("cost", 999)
-
-            host_cost = relay_cost + 1
-
-            update_route(
-                HOST_MAC,
-                NODE_B_MAC,
-                host_cost
-            )
-
-            last_host_seen = time.ticks_ms()
-
-            print("[NODE A] Relay route active via Node B")
-
-            return
-
-        except:
-            return  
-
-    # =========================
-    # DIRECT HOST ROUTE
-    # =========================
-    elif sender == HOST_MAC:
-
-        # ignore direct host ONLY if relay is still alive
-        if PREFER_RELAY and relay_route_alive():
-            return
-
-        update_route(
-            HOST_MAC,
-            HOST_MAC,
-            1
-        )
-
-        host_cost = 1
-
-        last_host_seen = time.ticks_ms()
-
-        print("[NODE A] Direct route to host")     
+def send_ping():
+    temp = read_temp()
+    pkt = {
+        "sender": LOCAL_MAC_STR,
+        "action": ACT_PING,
+        "path":   [LOCAL_MAC_STR],
+        "ttl":    3,
+        "pid":    new_pid(),
+        "data":   {"temp": temp, "node": "A"},
+    }
+    espnow_send_bcast(json.dumps(pkt))
+    print("[NODE A] ping  temp={:.1f}C  relay={}".format(temp, using_relay))
 
 # =========================
 # MAIN LOOP
 # =========================
-while True:
 
+while True:
     now = time.ticks_ms()
 
+    drain_recv_queue()
     pkt = get_next_packet()
-
     if pkt:
-
         mac, msg = pkt[:2]
-
         if msg:
             process_packet(mac, msg)
 
-    # =========================
-    # ROUTE HEALTH
-    # =========================
-    age = time.ticks_diff(now, last_host_seen)
+    if using_relay and last_relay_seen > 0:
+        if time.ticks_diff(now, last_relay_seen) > RELAY_DEAD_MS:
+            using_relay = False
+            print("[NODE A] relay dead — reinitialising radio")
+            espnow_reinit()   # reset C6 radio state for clean direct sends
 
-    if age < ROUTE_TIMEOUT:
+    led_relay() if using_relay else led_direct()
 
-        route = get_best_route(HOST_MAC)
-
-        if route:
-
-            if route["next_hop"] == HOST_MAC:
-                led_direct_host()
-            else:
-                led_relay_route()
-
-    else:
-
-        host_cost = 999
-        led_searching()
-
-    if time.ticks_diff(now, last_hello) > 2000:
-
-        send_hello()
-        last_hello = now
-
-    if time.ticks_diff(now, last_route_adv) > 4000:
-
-        send_route_advertisement()
-        last_route_adv = now
-
-    if time.ticks_diff(now, last_ping) > 5000:
-
+    if time.ticks_diff(now, last_ping) > PING_INTERVAL:
         send_ping()
         last_ping = now
 
-    cleanup_seen_packets()
-
+    cleanup_seen()
     time.sleep_ms(50)

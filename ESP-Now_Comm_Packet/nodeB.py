@@ -1,246 +1,120 @@
 from common_esp import *
+import esp32
 import time
-import json
-
-# =========================
-# SETUP
-# =========================
-
-FORWARD_SEEN = {}
-FORWARD_TIMEOUT = 5000
-
-last_forward_event = 0
-FORWARD_FLASH_MS = 150
 
 espnow_setup()
+
+HOST_MAC_STR  = format_mac(HOST_MAC)
+LOCAL_MAC_STR = format_mac(get_local_mac())
+
 espnow_set_recv_callback()
 
-print("NODE B:", format_mac(get_local_mac()))
-
-espnow_add_peer(HOST_MAC)
-
+print("NODE B:", LOCAL_MAC_STR)
 led_booting()
 
-last_hello = 0
-last_route_adv = 0
-last_host_seen = 0
+last_beacon     = 0
+BEACON_INTERVAL = 3000
+last_forward    = 0
+FORWARD_FLASH   = 200
+cached_temp     = 0   # updated each beacon cycle, used in forwards
 
-host_cost = 1
-
-ROUTE_TIMEOUT = 10000
-
-
-# =========================
-# FORWARD DEDUP KEY
-# =========================
-
-def forward_key(data):
-    return (data["packet_id"], data["sender"])
-
-
-def forward_seen(key):
-    now = time.ticks_ms()
-
-    if key in FORWARD_SEEN:
-        return True
-
-    FORWARD_SEEN[key] = now
-    return False
-
-
-def cleanup_forward_seen():
-    now = time.ticks_ms()
-
-    remove = []
-
-    for key, ts in FORWARD_SEEN.items():
-        if time.ticks_diff(now, ts) > FORWARD_TIMEOUT:
-            remove.append(key)
-
-    for key in remove:
-        del FORWARD_SEEN[key]
-
+def read_temp():
+    try:
+        return esp32.mcu_temperature()
+    except:
+        return 0
 
 # =========================
-# SEND HELLO
-# =========================
-
-def send_hello():
-
-    packet = create_msg_packet(
-        dest=BROADCAST_MAC,
-        send=get_local_mac(),
-        message="HELLO",
-        health={"bat": 95},
-        act=ACT_HELLO
-    )
-
-    espnow_send(BROADCAST_MAC, packet)
-
-
-# =========================
-# ROUTE ADVERTISEMENT
-# =========================
-
-def send_route_advertisement():
-
-    payload = json.dumps({
-        "cost": host_cost
-    })
-
-    packet = create_msg_packet(
-        dest=BROADCAST_MAC,
-        send=get_local_mac(),
-        message=payload,
-        health={"bat": 95},
-        act=ACT_ROUTE
-    )
-
-    espnow_send(BROADCAST_MAC, packet)
-
-
-# =========================
-# FORWARD PACKET (FIXED)
+# FORWARD NODE A's PING
+# Appends Node B to path and adds cached temp as relay_data.
+# Uses cached_temp to avoid expensive sensor read inside forward.
 # =========================
 
 def forward_packet(data):
+    global last_forward
 
-    global last_host_seen, last_forward_event
-
-    if data["ttl"] <= 1:
+    if data.get("ttl", 0) <= 1:
         return
 
-    # prevent loops via path history
-    if get_local_mac() in data["path"]:
+    path = data.get("path", [])
+    if LOCAL_MAC_STR in path:
         return
 
-    print(f"""
-[FORWARDING]
-FROM: {format_mac(data['sender'])}
-TO HOST: {format_mac(HOST_MAC)}
-""")
+    fwd = {
+        "sender":     data["sender"],
+        "action":     ACT_PING,
+        "path":       path + [LOCAL_MAC_STR],
+        "ttl":        data["ttl"] - 1,
+        "pid":        data["pid"],
+        "data":       data.get("data", {}),
+        "relay_temp": cached_temp,
+    }
 
-    new_packet = create_msg_packet(
-        dest=data["destination"],
-        send=data["sender"],
-        message=data["message"],
-        health={"bat": data["battery"]},
-        path=data["path"] + [get_local_mac()],
-        ttl=data["ttl"] - 1,
-        act=data["action"]
-    )
-
-    espnow_send(HOST_MAC, new_packet)
-
-    last_forward_event = time.ticks_ms()
-    last_host_seen = time.ticks_ms()
-
+    espnow_send_bcast(json.dumps(fwd))
+    last_forward = time.ticks_ms()
+    print("[NODE B] fwd path={}".format(len(fwd["path"])))
 
 # =========================
-# PROCESS PACKETS
+# PROCESS INCOMING PACKET
 # =========================
 
 def process_packet(mac, msg):
-
-    global last_host_seen
-
-    data = parse_msg_packet(msg)
-
+    data = parse_packet(msg)
     if not data:
         return
 
-    # global duplicate suppression
-    if packet_seen(data["sender"], data["packet_id"]):
+    sender = data.get("sender", "")
+    pid    = data.get("pid", 0)
+
+    if sender == LOCAL_MAC_STR:
         return
 
-    sender = data["sender"]
+    if packet_seen(sender, pid):
+        return
 
-    if sender != get_local_mac():
-        espnow_add_peer(sender)
-
-    # host heartbeat
-    if sender == HOST_MAC:
-
-        update_route(
-            HOST_MAC,
-            HOST_MAC,
-            1
-        )
-
-        last_host_seen = time.ticks_ms()
-
-        print("[NODE B] Direct host route")
-
-    # =========================
-    # RELAY FILTER (STRICT FIX)
-    # =========================
-
-    if (
-        data["action"] == ACT_PING
-        and data["destination"] == HOST_MAC
-        and data["sender"] != get_local_mac()
-        and get_local_mac() not in data["path"]
-    ):
-
-        key = forward_key(data)
-
-        if forward_seen(key):
-            return
-
+    if data.get("action") == ACT_PING:
         forward_packet(data)
 
+# =========================
+# BEACON
+# =========================
+
+def send_beacon():
+    global cached_temp
+    cached_temp = read_temp()
+    pkt = {
+        "sender": LOCAL_MAC_STR,
+        "action": ACT_ROUTE,
+        "path":   [],
+        "ttl":    1,
+        "pid":    new_pid(),
+        "data":   {"temp": cached_temp, "node": "B"},
+    }
+    espnow_send_bcast(json.dumps(pkt))
+    print("[NODE B] beacon  temp={:.1f}C".format(cached_temp))
 
 # =========================
 # MAIN LOOP
 # =========================
 
 while True:
-
     now = time.ticks_ms()
 
+    drain_recv_queue()
     pkt = get_next_packet()
-
     if pkt:
-
         mac, msg = pkt[:2]
-
         if msg:
             process_packet(mac, msg)
 
-    # =========================
-    # LED STATE MACHINE
-    # =========================
-
-    age = time.ticks_diff(now, last_host_seen)
-    flash_age = time.ticks_diff(now, last_forward_event)
-
-    if flash_age < FORWARD_FLASH_MS:
-
-        led_forwarding()
-
-    elif age < ROUTE_TIMEOUT:
-
-        led_direct_host()
-
+    if time.ticks_diff(now, last_forward) < FORWARD_FLASH:
+        led_forward()
     else:
+        led_direct()
 
-        led_searching()
+    if time.ticks_diff(now, last_beacon) > BEACON_INTERVAL:
+        send_beacon()
+        last_beacon = now
 
-    # =========================
-    # PERIODIC TASKS
-    # =========================
-
-    if time.ticks_diff(now, last_hello) > 2000:
-
-        send_hello()
-        last_hello = now
-
-    if time.ticks_diff(now, last_route_adv) > 4000:
-
-        send_route_advertisement()
-        last_route_adv = now
-
-    cleanup_seen_packets()
-    cleanup_forward_seen()
-
+    cleanup_seen()
     time.sleep_ms(50)
