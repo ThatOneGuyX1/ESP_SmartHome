@@ -1,31 +1,24 @@
-# config.py
-# -----------------------------------------------------------
-# Central configuration for the Serial TUI application.
-# Modify defaults here or override them via the Settings panel.
-# -----------------------------------------------------------
+import os
 
-# --- Serial Port Defaults ---
-DEFAULT_PORT     = "/dev/ttyUSB0"   # Windows: "COM3"
+DEFAULT_PORT     = "COM7"
 DEFAULT_BAUDRATE = 115200
-DEFAULT_TIMEOUT  = 1                # seconds
+DEFAULT_TIMEOUT  = 1
 
-# --- Available Sensors ---
-# Add or remove sensor names that your device broadcasts
-AVAILABLE_SENSORS = [
-    "Temperature",
-    "Humidity",
-    "Pressure",
-    "Voltage",
-    "Current",
-    "RPM",
-]
+AVAILABLE_SENSORS = ["temperature", "humidity", "motion", "pressure", "leak", "camera"]
 
-# --- Logging Defaults ---
-DEFAULT_LOG_DIR      = "./logs"
-DEFAULT_LOG_FILENAME = "serial_log.csv"
+DEFAULT_LOG_DIR      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+DEFAULT_LOG_FILENAME = "smarthome_log.csv"
 LOG_ENABLED          = True
 
-# --- Data Format ---
-# Expected line format from device: "SensorName:Value\n"
-# Example: "Temperature:25.3"
-DATA_DELIMITER = ":"
+STALE_THRESHOLD = 15
+MAX_HISTORY     = 14
+SPARK_CHARS     = "▁▂▃▄▅▆▇█"
+LEAK_THRESHOLD  = 1000
+
+ROW_COLORS = {
+    "sensor_data":   "white",
+    "sensor_report": "white",
+    "health":        "cyan",
+    "alert":         "bold red",
+    "discovery":     "green",
+}

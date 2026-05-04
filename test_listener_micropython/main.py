@@ -7,6 +7,7 @@ import network
 import espnow
 import time
 import struct
+import json
 
 import config
 import message
@@ -50,6 +51,18 @@ def parse_sensor_data(payload):
         print('  SENSOR_DATA payload too short')
         return
     temp, humidity, light, occ = message.unpack_sensor_data(payload)
+    
+    # JSON OUT FOR PC LOGGER
+    data = {
+        "type": "sensor",
+        "temp": temp / 100.0,
+        "humidity": humidity / 100.0,
+        "light": light,
+        "occ": 1 if occ else 0,
+        "ts": time.ticks_ms()
+    }
+    print("JSON_OUT:" + json.dumps(data))
+    
     print('  SENSOR_DATA:')
     print('    Temperature : %.2f C' % (temp / 100))
     print('    Humidity    : %.2f %%RH' % (humidity / 100))
@@ -62,6 +75,20 @@ def parse_health(payload):
         print('  HEALTH payload too short')
         return
     bat_mv, bat_soc, chip_temp, rssi, heap, uptime = message.unpack_health(payload)
+    
+    # JSON OUT FOR PC LOGGER
+    data = {
+        "type": "health",
+        "bat_mv": bat_mv,
+        "bat_soc": bat_soc,
+        "chip_temp": chip_temp / 100.0,
+        "rssi": rssi,
+        "heap": heap,
+        "uptime": uptime,
+        "ts": time.ticks_ms()
+    }
+    print("JSON_OUT:" + json.dumps(data))
+
     print('  HEALTH:')
     print('    Battery     : %u mV (%u%%)' % (bat_mv, bat_soc))
     print('    Chip temp   : %.2f C' % (chip_temp / 100))

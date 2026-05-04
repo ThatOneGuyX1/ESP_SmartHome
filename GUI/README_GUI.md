@@ -1,354 +1,193 @@
-# Gui for ESP Smart Home
-A modern, fully interactive Terminal User Interface (TUI) for monitoring,
-filtering, and logging live serial data from a connected host device.
+# ESP SmartHome — PC GUI
 
-Built with [Textual](https://textual.textualize.io/) and [PySerial](https://pyserial.readthedocs.io/).
+Terminal dashboard for the ESP-NOW mesh smart-home system. Reads JSON-line
+telemetry from the Host ESP over USB serial, surfaces live node status,
+alerts, and a CSV log.
+
+Built with [Textual](https://textual.textualize.io/) and
+[PySerial](https://pyserial.readthedocs.io/).
 
 ---
 
-## Project Structure
+## Where this fits in the system
+
+```
+[ Sensor Nodes ] --ESP-NOW--> [ Host ESP (hop 0) ] --USB serial--> [ PC GUI ]
+                                                  JSON lines       (this app)
+```
+
+The Host ESP receives mesh packets (`ACT_REPORT_HOME`), decodes them, and
+prints one JSON object per line over USB. The GUI parses those lines and
+ignores everything else (boot prints, route logs, etc.).
+
+---
+
+## Files
 
 ```
 GUI/
-├── GUI.py              # Entry point — Textual TUI application
-├── esp32+to_PC.py     # Serial reader backend (threaded PySerial)
-├── config.py            # Default settings (port, baud, sensors, logging)
-├── logger.py            # CSV data logger with hot-swap destination
-├── requirements.txt     # Python dependencies
-├── logs/                # Auto-created log output directory
-│   └── serial_log.csv   # Default log file (CSV format)
-└── README.md            # This file
+├── GUI.py            Textual TUI app — entry point
+├── config.py         Defaults: port, baud, sensors, thresholds, log paths
+├── logger.py         CSV logger with hot-swappable destination
+├── requirements.txt  pip dependencies
+└── logs/             Auto-created on first launch
+    └── smarthome_log.csv
 ```
 
 ---
 
-## Features
+## Serial input format
 
-| Feature | Description |
+The GUI consumes JSON lines emitted by the Host ESP's `handle_report_home()`:
+
+```json
+{"type":"sensor_report","sender":"leak_sensor","message":"LEAK:3100","trail":[11,5,1],"health":{"temp":24,"battery":87,"uptime":3600},"timestamp":null}
+```
+
+| Field | Notes |
 |---|---|
-| **Live Data Display** | Real-time scrolling DataTable updated every 50 ms via async queue |
-| **Sensor Selection** | Checkbox grid to enable/disable individual sensors — filters display & log |
-| **Settings Panel** | Editable serial port, baud rate, and log destination — no restart needed |
-| **Inline Log Viewer** | Last 500 log entries displayed inside the TUI on the Log tab |
-| **CSV Logger** | Auto-creates timestamped CSV logs, hot-swappable directory & filename |
-| **Pause / Resume** | Freeze the live view while data keeps accumulating in the queue |
-| **Port Scanner** | Lists all available COM/tty ports and auto-fills the first detected |
-| **Status Bar** | Live connection state, message count, and active log path |
-| **Keyboard Shortcuts** | Full keybinding support for fast navigation and control |
+| `type` | Currently always `sensor_report`. The GUI also recognizes `sensor_data`, `health`, `alert`, `discovery` (used by demo packets and reserved for future use). |
+| `sender` | Peer name from the host's peer list (e.g. `leak_sensor`, `air_quality`, `room_occup`). Not a MAC. |
+| `message` | Sensor-specific text the GUI parses with regex. Recognized prefixes: |
+| | • `T:..C H:..% L:..lux PIR:0/1` — environmental + occupancy |
+| | • `LEAK:<adc>` — water leak ADC reading |
+| | • `CAM:PERSON:<conf>` / `CAM:CLEAR` — camera person detection |
+| `trail` | Hop trail (list of node IDs). Not yet displayed. |
+| `health` | Optional `{temp, battery, uptime}`. Battery shown as `%`, uptime as seconds. |
+| `timestamp` | The GUI overwrites this with the local clock on receipt. |
+
+Lines that don't start with `{` are silently dropped.
 
 ---
 
-## Layout
+## Tabs
 
-```
-+---------------------------------------------------------------------+
-|  Serial TUI                                          12:34:56        |
-+------------+--------------+----------------+------------------------+
-| Live Data  |   Sensors    |   Settings     |         Log            |
-+------------+--------------+----------------+------------------------+
-| [Connect] [Disconnect] [Clear]                                       |
-| ------------------------------------------------------------------- |
-|  Time         | Sensor       | Value          | Raw                  |
-| --------------+--------------+----------------+------------------- |
-|  12:34:56.123 | Temperature  | 25.3           | Temperature:25.3     |
-|  12:34:56.174 | Humidity     | 61.2           | Humidity:61.2        |
-|  12:34:56.225 | Voltage      | 3.31           | Voltage:3.31         |
-|  12:34:56.276 | RPM          | 1450           | RPM:1450             |
-|                                                                      |
-+----------------------------------------------------------------------+
-| CONNECTED  |  Messages: 142  |  Log: ./logs/serial_log.csv           |
-+----------------------------------------------------------------------+
-| ^C Quit   ^L Clear   ^P Pause/Resume   ^R Reconnect                 |
-+---------------------------------------------------------------------+
-```
+| # | Tab | Purpose |
+|---|---|---|
+| 1 | 📊 Dashboard | One card per node — live values, sparklines (temp/humidity), battery, uptime, last-seen, stale indicator |
+| 2 | 📡 Live Log | Color-coded scrolling table of every parsed packet |
+| 3 | 🚨 Alerts | Filtered view of alerts (leak detected, explicit `alert` types). Counted in status bar. |
+| 4 | 🔬 Sensors | Per-sensor checkboxes — currently filters `LEAK:` and `CAM:` packets |
+| 5 | ⚙️  Settings | Port, baud, log directory, log filename, logging on/off — applied without restart |
+| 6 | 📋 Log | Raw text view of the last 500 entries |
+
+Cards turn red and gain a `⚠ STALE` badge if a node hasn't reported in
+`STALE_THRESHOLD` seconds (default 15).
 
 ---
 
-## Prerequisites
-
-- Python **3.10+** (required for Textual and modern type hints)
-- A serial device connected via USB/UART (`/dev/ttyUSB0`, `COM3`, etc.)
-
----
-
-## Installation and Setup
-
-### 1. Clone or download the project
-
-```bash
-git clone https://github.com/yourname/serial-tui.git
-cd serial-tui
-```
-
-### 2. (Recommended) Create a virtual environment
-
-```bash
-python -m venv .venv
-
-# Activate — Linux / macOS
-source .venv/bin/activate
-
-# Activate — Windows
-.venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Run the application
-
-```bash
-python main.py
-```
-
----
-
-## Configuration (config.py)
-
-All defaults live in `config.py`. Edit this file to match your device before launching.
-
-```python
-# Serial connection defaults
-DEFAULT_PORT     = "/dev/ttyUSB0"   # Windows users: "COM3"
-DEFAULT_BAUDRATE = 115200
-DEFAULT_TIMEOUT  = 1                # seconds
-
-# Sensor names your device broadcasts
-AVAILABLE_SENSORS = [
-    "Temperature",
-    "Humidity",
-    "Pressure",
-    "Voltage",
-    "Current",
-    "RPM",
-]
-
-# Logging defaults
-DEFAULT_LOG_DIR      = "./logs"
-DEFAULT_LOG_FILENAME = "serial_log.csv"
-LOG_ENABLED          = True
-
-# Expected line format: "SensorName:Value\n"
-DATA_DELIMITER = ":"
-```
-
-> These can also be changed live inside the Settings tab without editing the file.
-
----
-
-## Expected Serial Data Format
-
-Your device should send newline-terminated strings in the following format:
-
-```
-SensorName:Value\n
-```
-
-### Examples
-
-```
-Temperature:25.3
-Humidity:61.2
-Voltage:3.31
-RPM:1450
-Pressure:1013.25
-```
-
-> Any line that does not match `Name:Value` is captured as a `RAW` entry and
-> still displayed and logged.
-
----
-
-## File Descriptions
-
-### main.py
-
-The Textual TUI application and entry point. Defines all UI widgets, layout
-(tabs, table, forms), event handlers, button callbacks, keybindings, the async
-serial queue drain loop, and the status bar.
-
-### serial_import.py
-
-The serial backend. Manages opening/closing the port, runs a background
-thread to read and parse incoming lines, and feeds structured data dictionaries
-into a thread-safe `queue.Queue`. Fully decoupled from the UI.
-
-### config.py
-
-Central configuration for all defaults: port, baud rate, timeout, available
-sensor names, log directory, log filename, log enabled state, and data
-delimiter. Import this in any module that needs shared constants.
-
-### logger.py
-
-The CSV data logger. Opens and appends to a `.csv` file, supports runtime
-hot-swapping of both the log directory and filename, and can be toggled on/off
-without restarting. Columns: `timestamp`, `sensor`, `value`, `raw`.
-
-### requirements.txt
-
-Python package dependencies:
-
-```
-textual>=0.52.0
-pyserial>=3.5
-rich>=13.0.0
-```
-
----
-
-## Keyboard Shortcuts
+## Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
-| `1` | Switch to Live Data tab |
-| `2` | Switch to Sensors tab |
-| `3` | Switch to Settings tab |
-| `4` | Switch to Log tab |
-| `Ctrl + L` | Clear live data table and reset message count |
-| `Ctrl + P` | Pause / Resume live display (data still queued) |
-| `Ctrl + R` | Reconnect to serial port using current settings |
-| `Ctrl + C` | Quit the application cleanly |
+| `1`–`6` | Switch tabs |
+| `Ctrl + L` | Clear live table + reset message count |
+| `Ctrl + P` | Pause / resume display (data still queues in background) |
+| `Ctrl + R` | Disconnect and reconnect using current settings |
+| `Ctrl + C` | Quit |
 
 ---
 
-## Sensor Selection Tab
+## Setup
 
-The Sensors tab provides a checkbox grid for every sensor defined in
-`AVAILABLE_SENSORS` (from `config.py`).
-
-- **Checked** — data from that sensor is displayed in the live table and written to the log
-- **Unchecked** — data from that sensor is silently discarded
-- Press **Apply Sensor Filters** to commit your selection
-
-> Sensors not listed in `AVAILABLE_SENSORS` but received as RAW lines are
-> always passed through.
-
----
-
-## Log File Format
-
-Logs are written in CSV format to `./logs/serial_log.csv` by default.
-
-```csv
-timestamp,sensor,value,raw
-12:34:56.123,Temperature,25.3,Temperature:25.3
-12:34:56.174,Humidity,61.2,Humidity:61.2
-12:34:56.225,Voltage,3.31,Voltage:3.31
+```bash
+cd GUI
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux/macOS
+pip install -r requirements.txt
 ```
 
-### Changing the log destination at runtime
+Defaults live in `config.py` (port `COM7`, baud `115200`, log dir `./logs`).
+Edit there or change them at runtime via the Settings tab.
 
-1. Go to the Settings tab
-2. Update **Log Directory** and/or **Log Filename**
-3. Press **Save Settings**
+---
 
-The current log file is closed and a new one is opened immediately — no data
-loss and no restart required.
+## Run
+
+**Live mode** — connects to the Host ESP over USB:
+
+```bash
+python GUI.py
+```
+
+**Demo mode** — injects fake packets so you can see the UI without hardware:
+
+```bash
+python GUI.py --demo
+```
+
+Once the app is up:
+1. Settings tab → confirm port (use **Scan Ports** to auto-detect)
+2. Dashboard or Live Log tab → press **Connect**
+3. Cards will appear as nodes check in.
+
+---
+
+## CSV log format
+
+```csv
+timestamp,type,sender,message,temp,battery,uptime
+12:34:56,sensor_report,leak_sensor,LEAK:3100,,87,3600
+12:34:58,sensor_report,room_occup,T:22.5C H:48% PIR:1,24,86,3660
+```
+
+`temp/battery/uptime` come from the optional `health` block; blank if absent.
+
+To change the log destination at runtime: Settings tab → update fields →
+**Save Settings**. The current file is closed and a new one opened
+immediately, no data loss.
+
+---
+
+## Configuration knobs (`config.py`)
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `DEFAULT_PORT` | `"COM7"` | Serial port |
+| `DEFAULT_BAUDRATE` | `115200` | Must match Host ESP UART |
+| `AVAILABLE_SENSORS` | `[temperature, humidity, motion, pressure, leak, camera]` | Sensors tab checkboxes |
+| `DEFAULT_LOG_DIR`, `DEFAULT_LOG_FILENAME` | `./logs/`, `smarthome_log.csv` | CSV output |
+| `LOG_ENABLED` | `True` | Logger starts on |
+| `STALE_THRESHOLD` | `15` | Seconds before a card goes stale |
+| `MAX_HISTORY` | `14` | Sparkline data points kept per node |
+| `LEAK_THRESHOLD` | `1000` | ADC value above which `LEAK:` packets become alerts. Must match `leak_sensor/main.py`. |
+| `ROW_COLORS` | dict | Live-log row coloring per `type` |
 
 ---
 
 ## Troubleshooting
 
-### Serial port not found
+**No data appears**
+- Check the Host ESP is plugged into the listed port — Settings → Scan Ports
+- Confirm baud rate is `115200`
+- The host must be in `LOCAL_HOP == 0` mode and have peers reporting
+- Lines must start with `{` — anything else is dropped silently
 
-```
-Failed: [Errno 2] No such file or directory: '/dev/ttyUSB0'
-```
-
-- Go to the Settings tab and press **Scan Ports** to auto-detect available ports.
-- Or run from the terminal:
-
+**Permission denied on Linux/macOS**
 ```bash
-python -m serial.tools.list_ports -v
+sudo usermod -aG dialout $USER     # log out and back in
 ```
 
-### Permission denied on Linux / macOS
-
-```bash
-sudo usermod -aG dialout $USER
-# Then log out and back in
-```
-
-### No data appearing in the table
-
-- Verify the **baud rate** matches your device exactly.
-- Check that your device is sending lines ending with `\n`.
-- Confirm the **sensor names** in your data match entries in `AVAILABLE_SENSORS`
-  or that the correct sensors are checked in the Sensors tab.
-- Try the **Scan Ports** button to confirm the correct port is selected.
-
-### Textual not displaying correctly
-
-- Ensure your terminal supports **256-color** or **true-color** mode.
-- Recommended terminals: iTerm2, Windows Terminal, GNOME Terminal, Alacritty, Kitty.
-- Minimum terminal size: **80 x 24** characters.
-
----
-
-## Extending the Application
-
-### Add a new sensor
-
-Open `config.py` and append to `AVAILABLE_SENSORS`:
-
-```python
-AVAILABLE_SENSORS = [
-    ...
-    "CO2_Level",   # new sensor
-]
-```
-
-It will automatically appear in the Sensors tab checkbox grid.
-
-### Change the data format
-
-If your device uses a different delimiter (e.g. `=` or `,`), update:
-
-```python
-DATA_DELIMITER = "="   # in config.py
-```
-
-For more complex formats (JSON, binary), modify `_parse_line()` in `serial_import.py`.
-
-### Add a new tab
-
-In `main.py`, inside the `compose()` method, add a new `TabPane` block:
-
-```python
-with TabPane("Charts", id="charts"):
-    with Vertical(classes="panel"):
-        yield Label("Chart view coming soon...")
-```
+**Garbled rendering**
+- Use a terminal with 256-color or true-color: Windows Terminal, iTerm2, Alacritty, Kitty
+- Minimum 80×24
 
 ---
 
 ## Dependencies
 
-| Package | Version | Purpose |
-|---|---|---|
-| [textual](https://github.com/Textualize/textual) | `>=0.52.0` | TUI framework (widgets, layout, async) |
-| [pyserial](https://github.com/pyserial/pyserial) | `>=3.5` | Serial port communication |
-| [rich](https://github.com/Textualize/rich) | `>=13.0.0` | Terminal formatting (used by Textual) |
+| Package | Purpose |
+|---|---|
+| textual | TUI framework |
+| pyserial | USB serial I/O |
+| rich | Terminal styling (transitive via Textual) |
 
 ---
 
-## License
+## Known limitations
 
-MIT License — free to use, modify, and distribute.
-
----
-
-## Acknowledgements
-
-- [Textual by Textualize](https://textual.textualize.io/) — modern Python TUI framework
-- [PySerial](https://pyserial.readthedocs.io/) — reliable Python serial communication library
-- [Rich](https://rich.readthedocs.io/) — beautiful terminal output rendering
-
----
-
-*Generated: April 06, 2026*
-~~~
+- Hop trail received in JSON but not displayed yet
+- No outbound command path — provisioning (`ADD`, `SYNC`, `SETNAME`) still requires raw serial via PuTTY/screen
+- Air-quality VOC/CO2 fields not extracted by the dashboard regex yet
+- `esp32_to_PC.py` is legacy (superseded by `SerialReader` inside `GUI.py`) and slated for removal
