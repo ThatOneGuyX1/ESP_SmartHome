@@ -1,0 +1,10 @@
+{
+  "peers": {
+    "host": {
+      "mac": "00:4B:12:BE:BC:B4",
+      "neighbors": ["light_1"],
+      "hop": 0,
+      "id": 1
+    }
+  }
+}
