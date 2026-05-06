@@ -12,7 +12,9 @@
 # -----------------------------------------------------------
 
 import asyncio
+import csv
 import json
+import os
 import re
 import serial
 import serial.tools.list_ports
@@ -80,6 +82,20 @@ class SerialReader:
     def get_available_ports(self) -> list:
         return [p.device for p in serial.tools.list_ports.comports()]
 
+    def send_command(self, line: str) -> bool:
+        """Write a newline-terminated command to the serial port. Returns True on success."""
+        if not (self._serial and self._serial.is_open):
+            self.error = "Not connected"
+            return False
+        try:
+            payload = line.rstrip("\r\n") + "\n"
+            self._serial.write(payload.encode("utf-8"))
+            self._serial.flush()
+            return True
+        except Exception as e:
+            self.error = str(e)
+            return False
+
     async def _read_loop(self):
         loop = asyncio.get_event_loop()
         while self._running:
@@ -142,6 +158,8 @@ class NodeCard(Static):
             "alert":     "",
             "leak":      "—",
             "person":    "—",
+            "trail":     "—",
+            "hops":      "—",
         }
         self._temp_history: list[float] = []
         self._hum_history:  list[float] = []
@@ -160,6 +178,11 @@ class NodeCard(Static):
         s = self._state
         s["last_seen"] = entry.get("timestamp", "—")
         msg = entry.get("message", "")
+
+        trail = entry.get("trail") or []
+        if trail:
+            s["trail"] = " → ".join(str(h) for h in trail)
+            s["hops"]  = str(len(trail))
 
         if msg_type == "discovery":
             s["node_type"] = msg.split()[0] if msg else "UNKNOWN"
@@ -272,6 +295,7 @@ class NodeCard(Static):
             f"[yellow]Camera:[/yellow]    {person_disp}\n"
             f"{'─' * 38}\n"
             f"[dim]Battery: {s['battery']}   Uptime: {s['uptime']}[/dim]\n"
+            f"[dim]Hops: {s['hops']}   Trail: {s['trail']}[/dim]\n"
             f"[dim]Last seen: {s['last_seen']}[/dim]"
             f"{alert_line}"
         )
@@ -370,9 +394,10 @@ class SerialTUI(App):
         {"type": "sensor_data",   "sender": "B8:F8:62:D5:44:04", "message": "T:23.1C H:46% PIR:0", "trail": [2],  "health": {"battery": 86, "uptime": 3660}},
     ]
 
-    def __init__(self, demo: bool = False):
+    def __init__(self, demo: bool = False, replay_path: str = None):
         super().__init__()
         self._demo          = demo
+        self._replay_path   = replay_path
         self.reader         = SerialReader()
         self.logger         = DataLogger()
         self.active_sensors = set(AVAILABLE_SENSORS)
@@ -481,6 +506,21 @@ class SerialTUI(App):
                         yield Button("🔄 Reset Defaults", id="btn_reset_settings", classes="btn-browse")
                     yield Static("", id="settings_status")
 
+                    yield Static("─" * 60, classes="divider")
+                    yield Label("[bold]Mesh Commands[/bold]  —  send to Host ESP over serial")
+                    yield Static("─" * 60, classes="divider")
+
+                    with Horizontal(classes="form-row"):
+                        yield Label("Command:", classes="form-label")
+                        yield Input(placeholder="e.g. LIST  or  ADD kitchen AA:BB:.. 2 4 host",
+                                    id="input_command", classes="form-input")
+                        yield Button("Send", id="btn_send_command", classes="btn-save")
+
+                    with Horizontal(classes="form-row"):
+                        yield Button("LIST",  id="btn_quick_list",  classes="btn-browse")
+                        yield Button("SYNC",  id="btn_quick_sync",  classes="btn-browse")
+                    yield Static("", id="command_status")
+
             # ── Tab 6: Raw Log ───────────────────────────────────────────────
             with TabPane("📋 Log", id="log"):
                 with Vertical(classes="panel"):
@@ -516,6 +556,11 @@ class SerialTUI(App):
             self._start_poll()
             self.run_worker(self._inject_demo_packets(), exclusive=False)
             self.notify("Demo mode active — fake packets incoming", timeout=5)
+        elif self._replay_path:
+            self.is_connected = True
+            self._start_poll()
+            self.run_worker(self._inject_replay_packets(self._replay_path), exclusive=False)
+            self.notify(f"Replay mode — {os.path.basename(self._replay_path)}", timeout=5)
 
     # ── Button handlers ───────────────────────────────────────────────────────
 
@@ -592,6 +637,34 @@ class SerialTUI(App):
             f"[green]✔ Saved. Log → {self.logger.log_path}[/green]"
         )
         self._update_status()
+
+    @on(Button.Pressed, "#btn_send_command")
+    def handle_send_command(self):
+        cmd = self.query_one("#input_command", Input).value.strip()
+        if not cmd:
+            self.notify("Empty command.", severity="warning")
+            return
+        self._send_mesh_command(cmd)
+
+    @on(Button.Pressed, "#btn_quick_list")
+    def handle_quick_list(self): self._send_mesh_command("LIST")
+
+    @on(Button.Pressed, "#btn_quick_sync")
+    def handle_quick_sync(self): self._send_mesh_command("SYNC")
+
+    def _send_mesh_command(self, cmd: str):
+        status = self.query_one("#command_status", Static)
+        if not self.is_connected:
+            status.update("[red]Not connected — connect first.[/red]")
+            self.notify("Not connected.", severity="error")
+            return
+        if self.reader.send_command(cmd):
+            status.update(f"[green]✔ Sent: {cmd}[/green]")
+            self.notify(f"Sent: {cmd}")
+            self.query_one("#input_command", Input).value = ""
+        else:
+            status.update(f"[red]✖ {self.reader.error or 'send failed'}[/red]")
+            self.notify(f"Send failed: {self.reader.error}", severity="error")
 
     @on(Button.Pressed, "#btn_reset_settings")
     def handle_reset_settings(self):
@@ -672,6 +745,7 @@ class SerialTUI(App):
                             f"[bold red]{message}[/]",
                         )
                         alerts_table.scroll_end(animate=False)
+                        self.bell()
                         self.alert_count += 1
                         self.query_one("#alert_count_label", Label).update(
                             f"[bold red]🚨 {self.alert_count} alert"
@@ -721,6 +795,70 @@ class SerialTUI(App):
             pkt["timestamp"] = datetime.now().strftime("%H:%M:%S")
             self.reader.data_queue.put_nowait(dict(pkt))
             await asyncio.sleep(2)
+
+    async def _inject_replay_packets(self, path: str, delay: float = 0.4):
+        """Read a CSV or JSONL log and stream packets through the same pipeline."""
+        await asyncio.sleep(0.5)
+        ext = os.path.splitext(path)[1].lower()
+        try:
+            if ext == ".jsonl":
+                packets = self._load_jsonl(path)
+            elif ext == ".csv":
+                packets = self._load_csv(path)
+            else:
+                self.notify(f"Unsupported replay format: {ext}", severity="error")
+                return
+        except FileNotFoundError:
+            self.notify(f"Replay file not found: {path}", severity="error")
+            return
+
+        if not packets:
+            self.notify("Replay file empty.", severity="warning")
+            return
+
+        self.notify(f"Replaying {len(packets)} packets from {os.path.basename(path)}", timeout=4)
+        for pkt in packets:
+            pkt["timestamp"] = datetime.now().strftime("%H:%M:%S")
+            self.reader.data_queue.put_nowait(pkt)
+            await asyncio.sleep(delay)
+        self.notify("Replay complete.", timeout=4)
+
+    @staticmethod
+    def _load_jsonl(path: str) -> list:
+        out = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return out
+
+    @staticmethod
+    def _load_csv(path: str) -> list:
+        out = []
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                health = {}
+                for k in ("temp", "battery", "uptime"):
+                    v = row.get(k, "")
+                    if v not in ("", None):
+                        try:    health[k] = int(v)
+                        except ValueError:
+                            try: health[k] = float(v)
+                            except ValueError: health[k] = v
+                out.append({
+                    "type":    row.get("type", ""),
+                    "sender":  row.get("sender", ""),
+                    "message": row.get("message", ""),
+                    "trail":   [],
+                    "health":  health,
+                })
+        return out
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -773,4 +911,14 @@ class SerialTUI(App):
 
 if __name__ == "__main__":
     import sys
-    SerialTUI("--demo" in sys.argv).run()
+    argv = sys.argv[1:]
+    demo = "--demo" in argv
+    replay = None
+    if "--replay" in argv:
+        i = argv.index("--replay")
+        if i + 1 < len(argv):
+            replay = argv[i + 1]
+        else:
+            print("Usage: python GUI.py [--demo] [--replay <path-to-.csv-or-.jsonl>]")
+            sys.exit(2)
+    SerialTUI(demo=demo, replay_path=replay).run()
