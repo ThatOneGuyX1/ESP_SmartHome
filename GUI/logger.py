@@ -1,88 +1,93 @@
-# logger.py
-# -----------------------------------------------------------
-# CSV and plain-text logger with runtime-changeable destination.
-# -----------------------------------------------------------
-
 import os
 import csv
+import json
 from datetime import datetime
+
 from config import DEFAULT_LOG_DIR, DEFAULT_LOG_FILENAME, LOG_ENABLED
 
 
+def _session_filename(base: str) -> str:
+    """Insert a session timestamp before the extension, e.g.
+    'smarthome_log.csv' -> 'smarthome_log_2026-05-05_14-32.csv'."""
+    root, ext = os.path.splitext(base)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    return f"{root}_{stamp}{ext}"
+
+
 class DataLogger:
+    """Logs parsed mesh packets to CSV and a parallel JSONL file. Hot-swappable destination.
+
+    Each program launch gets its own timestamped pair of files so individual
+    sessions don't bleed into each other.
     """
-    Logs serial data entries to a CSV file.
-    The log destination (directory + filename) can be changed at runtime.
-    """
+
+    FIELDNAMES = ["timestamp", "type", "sender", "message", "temp", "battery", "uptime"]
 
     def __init__(self):
-        self.enabled      = LOG_ENABLED
-        self.log_dir      = DEFAULT_LOG_DIR
-        self.log_filename = DEFAULT_LOG_FILENAME
-        self._file        = None
-        self._writer      = None
-        self._fieldnames  = ["timestamp", "sensor", "value", "raw"]
-
-    # ----------------------------------------------------------
-    # File Management
-    # ----------------------------------------------------------
+        self.enabled  = LOG_ENABLED
+        self.log_dir  = DEFAULT_LOG_DIR
+        self.filename = _session_filename(DEFAULT_LOG_FILENAME)
+        self._csv_file    = None
+        self._csv_writer  = None
+        self._jsonl_file  = None
 
     @property
     def log_path(self) -> str:
-        return os.path.join(self.log_dir, self.log_filename)
+        return os.path.join(self.log_dir, self.filename)
+
+    @property
+    def jsonl_path(self) -> str:
+        base, _ = os.path.splitext(self.log_path)
+        return base + ".jsonl"
 
     def open(self):
-        """Open/create the log file (appends if exists)."""
         os.makedirs(self.log_dir, exist_ok=True)
-        new_file = not os.path.exists(self.log_path)
-        self._file   = open(self.log_path, "a", newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames)
-        if new_file:
-            self._writer.writeheader()
+        is_new = not os.path.exists(self.log_path)
+        self._csv_file   = open(self.log_path, "a", newline="", encoding="utf-8")
+        self._csv_writer = csv.writer(self._csv_file)
+        if is_new:
+            self._csv_writer.writerow(self.FIELDNAMES)
+            self._csv_file.flush()
+        self._jsonl_file = open(self.jsonl_path, "a", encoding="utf-8")
 
     def close(self):
-        """Flush and close the log file."""
-        if self._file:
-            self._file.flush()
-            self._file.close()
-            self._file   = None
-            self._writer = None
+        if self._csv_file:
+            self._csv_file.flush()
+            self._csv_file.close()
+            self._csv_file = self._csv_writer = None
+        if self._jsonl_file:
+            self._jsonl_file.flush()
+            self._jsonl_file.close()
+            self._jsonl_file = None
+
+    def set_enabled(self, value: bool):
+        self.enabled = value
+        if value and self._csv_file is None:
+            self.open()
+        elif not value:
+            self.close()
 
     def change_destination(self, new_dir: str = None, new_filename: str = None):
-        """
-        Hot-swap the log file at runtime.
-        Closes the current file and opens a new one at the given path.
-        """
         self.close()
-        if new_dir:
-            self.log_dir = new_dir
-        if new_filename:
-            self.log_filename = new_filename
+        if new_dir:      self.log_dir  = new_dir
+        if new_filename: self.filename = new_filename
         if self.enabled:
             self.open()
 
-    # ----------------------------------------------------------
-    # Writing
-    # ----------------------------------------------------------
-
-    def log(self, entry: dict):
-        """Write a parsed data entry to the log file."""
-        if not self.enabled or self._writer is None:
+    def log(self, data: dict):
+        if not self.enabled or self._csv_writer is None:
             return
-        try:
-            self._writer.writerow({
-                "timestamp": entry.get("timestamp", ""),
-                "sensor":    entry.get("sensor",    ""),
-                "value":     entry.get("value",     ""),
-                "raw":       entry.get("raw",       ""),
-            })
-            self._file.flush()
-        except Exception as e:
-            pass  # Don't crash the UI for a log error
-
-    def set_enabled(self, state: bool):
-        self.enabled = state
-        if state and self._file is None:
-            self.open()
-        elif not state:
-            self.close()
+        health = data.get("health", {}) or {}
+        self._csv_writer.writerow([
+            data.get("timestamp", ""),
+            data.get("type",      ""),
+            data.get("sender",    ""),
+            data.get("message",   ""),
+            health.get("temp",    ""),
+            health.get("battery", ""),
+            health.get("uptime",  ""),
+        ])
+        self._csv_file.flush()
+        if self._jsonl_file:
+            self._jsonl_file.write(json.dumps(data) + "\n")
+            self._jsonl_file.flush()
